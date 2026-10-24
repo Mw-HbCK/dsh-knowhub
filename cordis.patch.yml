@@ -1,0 +1,15 @@
+# 知枢 KnowHub bundle patch.
+# 安装：dsh plugin --profile <name> add dsh-knowhub（或把本文件作为 --patch 覆盖层）。
+# 行 id 可被上层 patch 覆盖；config 为整体替换（不会深合并）。
+
+- insert:
+    # 宿主半边：知识库服务、工具、/knowhub HTTP 路由
+    - id: knowhub
+      name: dsh-knowhub/host
+      config:
+        storageRoot: ''
+        probeModelOnDiagnose: false
+
+    # 客户端半边（node 侧为空壳）：dsh.client 声明让客户端模块系统把它编入 window.__DSH_BOOT__
+    - id: knowhub-ui
+      name: dsh-knowhub

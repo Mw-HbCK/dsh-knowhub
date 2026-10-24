@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+      - name: 安装 TypeScript 工具链
+        run: npm install --no-audit --no-fund --no-save typescript@5.6.3 || true
+      - name: 准备 tsc 目录
+        run: |
+          mkdir -p .toolchain/node_modules
+          if [ ! -d node_modules/typescript ]; then echo '缺少 typescript 依赖（peer/本地 devDependency）'; fi
+          ln -sfn "$PWD/node_modules/typescript" .toolchain/node_modules/typescript 2>/dev/null || true
+      - name: 全量校验
+        run: node scripts/ci.mjs

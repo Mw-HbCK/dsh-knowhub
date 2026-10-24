@@ -1,0 +1,10 @@
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(":memory:");
+const res = {};
+db.exec("CREATE VIRTUAL TABLE tri USING fts5(body, tokenize='trigram')");
+db.prepare("INSERT INTO tri(body) VALUES (?)").run("知枢知识中心 FTS5 全文检索知识库");
+db.prepare("INSERT INTO tri(body) VALUES (?)").run("Repo Wiki 项目总览 与长期记忆");
+const q = (s) => { try { return db.prepare("SELECT count(*) c FROM tri WHERE tri MATCH ?").get(s).c; } catch (e) { return "ERR:" + String(e.message).slice(0,60); } };
+res.trigram = { "知识库": q("知识库"), "知识": q("知识"), "知枢": q("知枢"), "FTS5": q("FTS5"), "wiki": q("wiki") };
+res.fts5Support = db.prepare("select sqlite_version() v").get().v;
+console.log(JSON.stringify(res, null, 1));

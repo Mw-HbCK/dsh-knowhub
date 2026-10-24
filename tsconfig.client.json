@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "outDir": ".build/client-cjs",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": false,
+    "verbatimModuleSyntax": false,
+    "types": [],
+    "typeRoots": [
+      ".toolchain/node_modules/@types",
+      "src/types"
+    ]
+  },
+  "include": [
+    "src/client/**/*.ts",
+    "src/types/**/*.d.ts"
+  ]
+}

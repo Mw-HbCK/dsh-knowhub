@@ -1,0 +1,12 @@
+# KnowHub dev workspace: ignore build output, toolchains, local debug artifacts
+.build/
+.devhome/
+.devprofile/
+.npm-cache/
+.research/
+.toolchain/
+lib/
+node_modules/
+*.tgz
+# internal gate reports (local paths, workspace names) are not published
+docs/
