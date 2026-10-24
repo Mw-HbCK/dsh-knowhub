@@ -1038,7 +1038,6 @@ function KbView(props: any): any {
   const [error, setError] = R.useState(null)
   const [showForm, setShowForm] = R.useState(false)
   const [kbQuery, setKbQuery] = R.useState('')
-  const [listWorkspace, setListWorkspace] = R.useState('all')
   const [detail, setDetail] = R.useState(null)
   const [detailLoading, setDetailLoading] = R.useState(false)
   const [pendingDelete, setPendingDelete] = R.useState(null)
@@ -1085,22 +1084,20 @@ function KbView(props: any): any {
     }
   }, [])
 
-  // 列表范围：'all' 看全部（用户级 + 所有工作区），或指定某个工作区。
-  // 不能只按 cwd 反查出的「当前工作区」过滤：知识库允许建在任意工作区，
-  // 建完看不见、同名又报已存在，就是这样产生的。
-  const load = R.useCallback(async (workspaceOverride?: string) => {
+  // 列表范围：始终展示全部知识库（用户级 + 所有工作区），不按工作区筛选。
+  // 知识库允许建在任意工作区；若按 cwd 反查的「当前工作区」过滤，会出现建完看不见、
+  // 同名却报已存在的错觉，所以这里固定请求 all=1。
+  const load = R.useCallback(async () => {
     setLoading(true); setError(null)
-    const target = typeof workspaceOverride === 'string' ? workspaceOverride : listWorkspace
     try {
-      const query = target === 'all' ? '?all=1' : '?workspaceId=' + encodeURIComponent(target)
-      const value = await request('/kb' + query)
+      const value = await request('/kb?all=1')
       setList(value.knowledgeBases ?? [])
     } catch (failure: any) {
       setError(message(failure))
     } finally {
       setLoading(false)
     }
-  }, [listWorkspace])
+  }, [])
 
   R.useEffect(() => { void load() }, [load])
   R.useEffect(() => { void load() }, [props.refreshKey])
@@ -1411,23 +1408,13 @@ function KbView(props: any): any {
           onClick: () => { setShowForm(!showForm); setDetail(null) },
         }, showForm ? '收起' : '+ 新建'),
       ),
-      h('div', { style: { padding: '0 12px 8px', display: 'flex', flexDirection: 'column', gap: '6px' } },
-        h('select', {
-          style: { ...styles.input, height: '30px' },
-          value: listWorkspace,
-          onChange: (event: any) => { setListWorkspace(event.target.value); setDetail(null) },
-        },
-          h('option', { value: 'all' }, '全部工作区（用户级 + 各工作区）'),
-          (workspaces ?? []).map((workspace: any) => h('option', { key: workspace.id, value: workspace.id }, (workspace.title ?? workspace.path ?? workspace.id) + (workspace.pathState === 'missing' ? '（目录不可用）' : ''))),
-        ),
-        h('div', { style: styles.hint }, listWorkspace === 'all'
-          ? '显示用户级知识库与所有工作区的知识库。'
-          : '只显示该工作区的知识库，以及用户级知识库。'),
+      h('div', { style: { padding: '0 12px 8px' } },
+        h('div', { style: styles.hint }, '已列出全部知识库（用户级 + 各工作区）' + (list !== null ? '，共 ' + list.length + ' 个' : '') + '。'),
       ),
       error !== null ? h('div', { style: { ...styles.error, margin: '0 10px 10px' } }, error) : null,
       h('div', { style: styles.listScroll, className: 'kh-scroll' },
         list === null ? (loading ? h('div', { style: styles.listEmpty }, '正在加载知识库列表…') : null)
-          : filteredList.length === 0 ? h('div', { style: styles.listEmpty }, list.length === 0 ? (listWorkspace === 'all' ? '还没有任何知识库。点击「+ 新建」创建。' : '该范围还没有知识库。') : '没有匹配的知识库名称。')
+          : filteredList.length === 0 ? h('div', { style: styles.listEmpty }, list.length === 0 ? '还没有任何知识库。点击「+ 新建」创建。' : '没有匹配的知识库名称。')
           : filteredList.map((kb: any) => h('button', {
             key: kb.id, type: 'button',
             style: detail !== null && detail.knowledgeBase.id === kb.id ? styles.treeRowActive : styles.treeRow,
@@ -1476,10 +1463,8 @@ function KbView(props: any): any {
         onCreated: async (kb: any) => {
           setShowForm(false)
           notify('知识库「' + kb.name + '」已创建。下一步：在详情里点「开始初始化」。')
-          // 新建的库可能绑在别的工作区：直接把列表切过去并打开详情，避免「建完了却看不见」。
-          const target = kb.scope === 'workspace' && kb.workspaceId ? String(kb.workspaceId) : undefined
-          if (target !== undefined) setListWorkspace(target)
-          await load(target)
+          // 列表固定展示全部知识库，新建后直接刷新并打开详情即可。
+          await load()
           await openDetail(kb.id)
         },
       }),

@@ -334,6 +334,31 @@ await testCase('对比页换行开关：默认自动换行，点击后切换为�
   check(afterButton.props.style.background === 'transparent', '点击后应切换为关闭（透明）状态')
 })
 
+await testCase('知识库列表：固定展示全部知识库，不再按工作区筛选', async () => {
+  const otherKb = { ...kb, id: 'kb2', name: '另一个工作区知识库', scope: 'workspace', workspaceId: 'ws-2', workspaceTitle: 'NexDesk', scopeKey: 'ws:ws-2' }
+  const userKb = { ...kb, id: 'kb3', name: '用户级共享知识库', scope: 'user', workspaceId: null, workspaceTitle: null, scopeKey: 'user:*' }
+  resetCalls((request) => {
+    if (request.url.includes('/kb?all=1')) return { knowledgeBases: [kb, otherKb, userKb], all: true, currentWorkspaceId: 'ws-1' }
+    return { knowledgeBases: [] }
+  })
+  await mount(smoke.KbView, {
+    models: [],
+    workspaces: [{ id: 'ws-1', title: '演示项目', path: 'C:/demo' }, { id: 'ws-2', title: 'NexDesk', path: 'C:/nexdesk' }],
+    currentWorkspace: { workspaceId: 'ws-1', workspacePath: 'C:/demo' },
+    notify: () => {},
+    refreshKey: 0,
+  })
+  await sleep(30)
+  const kbCalls = calls.filter((item) => item.url.includes('/kb?') || item.url.includes('/kb') && item.url.includes('all=1'))
+  check(kbCalls.length >= 1, '应当请求知识库列表，实际 ' + kbCalls.length)
+  check(kbCalls.every((item) => item.url.includes('all=1')), '列表请求必须带 all=1，实际：' + JSON.stringify(kbCalls.map((item) => item.url)))
+  check(kbCalls.every((item) => !item.url.includes('workspaceId=')), '列表请求不应再按工作区过滤')
+  checkText('已列出全部知识库', '列表说明文案')
+  checkText('共 3 个', '列表数量')
+  checkText('另一个工作区知识库', '其他工作区的知识库也应出现')
+  checkText('用户级共享知识库', '用户级知识库也应出现')
+  check(!text().includes('全部工作区（用户级 + 各工作区）'), '不应再出现工作区筛选下拉')
+})
 console.log('checks=' + checkCount())
 const failed = failureCount()
 console.log(failed === 0 ? 'INTERACTION PASS' : 'INTERACTION FAILURES: ' + failed)
