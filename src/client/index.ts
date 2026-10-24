@@ -805,6 +805,7 @@ function KbView(props: any): any {
   const [error, setError] = R.useState(null)
   const [showForm, setShowForm] = R.useState(false)
   const [kbQuery, setKbQuery] = R.useState('')
+  const [listWorkspace, setListWorkspace] = R.useState('all')
   const [detail, setDetail] = R.useState(null)
   const [detailLoading, setDetailLoading] = R.useState(false)
   const [pendingDelete, setPendingDelete] = R.useState(null)
@@ -851,10 +852,14 @@ function KbView(props: any): any {
     }
   }, [])
 
-  const load = R.useCallback(async () => {
+  // 列表范围：'all' 看全部（用户级 + 所有工作区），或指定某个工作区。
+  // 不能只按 cwd 反查出的「当前工作区」过滤：知识库允许建在任意工作区，
+  // 建完看不见、同名又报已存在，就是这样产生的。
+  const load = R.useCallback(async (workspaceOverride?: string) => {
     setLoading(true); setError(null)
+    const target = typeof workspaceOverride === 'string' ? workspaceOverride : listWorkspace
     try {
-      const query = currentWorkspace && currentWorkspace.workspaceId ? '?workspaceId=' + encodeURIComponent(currentWorkspace.workspaceId) : ''
+      const query = target === 'all' ? '?all=1' : '?workspaceId=' + encodeURIComponent(target)
       const value = await request('/kb' + query)
       setList(value.knowledgeBases ?? [])
     } catch (failure: any) {
@@ -862,7 +867,7 @@ function KbView(props: any): any {
     } finally {
       setLoading(false)
     }
-  }, [currentWorkspace])
+  }, [listWorkspace])
 
   R.useEffect(() => { void load() }, [load])
   R.useEffect(() => { void load() }, [props.refreshKey])
@@ -1173,10 +1178,23 @@ function KbView(props: any): any {
           onClick: () => { setShowForm(!showForm); setDetail(null) },
         }, showForm ? '收起' : '+ 新建'),
       ),
+      h('div', { style: { padding: '0 12px 8px', display: 'flex', flexDirection: 'column', gap: '6px' } },
+        h('select', {
+          style: { ...styles.input, height: '30px' },
+          value: listWorkspace,
+          onChange: (event: any) => { setListWorkspace(event.target.value); setDetail(null) },
+        },
+          h('option', { value: 'all' }, '全部工作区（用户级 + 各工作区）'),
+          (workspaces ?? []).map((workspace: any) => h('option', { key: workspace.id, value: workspace.id }, (workspace.title ?? workspace.path ?? workspace.id) + (workspace.pathState === 'missing' ? '（目录不可用）' : ''))),
+        ),
+        h('div', { style: styles.hint }, listWorkspace === 'all'
+          ? '显示用户级知识库与所有工作区的知识库。'
+          : '只显示该工作区的知识库，以及用户级知识库。'),
+      ),
       error !== null ? h('div', { style: { ...styles.error, margin: '0 10px 10px' } }, error) : null,
       h('div', { style: styles.listScroll, className: 'kh-scroll' },
         list === null ? (loading ? h('div', { style: styles.listEmpty }, '正在加载知识库列表…') : null)
-          : filteredList.length === 0 ? h('div', { style: styles.listEmpty }, list.length === 0 ? '当前作用范围还没有知识库。点击「+ 新建」创建。' : '没有匹配的知识库名称。')
+          : filteredList.length === 0 ? h('div', { style: styles.listEmpty }, list.length === 0 ? (listWorkspace === 'all' ? '还没有任何知识库。点击「+ 新建」创建。' : '该范围还没有知识库。') : '没有匹配的知识库名称。')
           : filteredList.map((kb: any) => h('button', {
             key: kb.id, type: 'button',
             style: detail !== null && detail.knowledgeBase.id === kb.id ? styles.treeRowActive : styles.treeRow,
@@ -1185,7 +1203,7 @@ function KbView(props: any): any {
             h('span', { style: styles.treeTitle },
               h('span', { style: styles.treeName }, kb.name),
               h('span', { style: styles.treeMeta },
-                (kb.scope === 'user' ? '用户级' : '工作区级') + ' · ' + (STATUS_LABEL[kb.status] ?? kb.status) + ' · ' + (kb.documentCount ?? 0) + ' 条'),
+                (kb.scope === 'user' ? '用户级' : '工作区级 · ' + (kb.workspaceTitle ?? kb.workspaceId ?? '未知工作区')) + ' · ' + (STATUS_LABEL[kb.status] ?? kb.status) + ' · ' + (kb.documentCount ?? 0) + ' 条'),
             ),
           )),
       ),
@@ -1223,7 +1241,15 @@ function KbView(props: any): any {
         h(CreateKbForm, {
           models, workspaces, currentWorkspaceId: currentWorkspace?.workspaceId ?? '',
           onCancel: () => setShowForm(false),
-          onCreated: async (kb: any) => { setShowForm(false); notify('知识库「' + kb.name + '」已创建。下一步：在详情里点「开始初始化」。'); await load() },
+          onCreated: async (kb: any) => {
+            setShowForm(false)
+            notify('知识库「' + kb.name + '」已创建。下一步：在详情里点「开始初始化」。')
+            // 新建的库可能绑在别的工作区：直接把列表切过去并打开详情，避免「建完了却看不见」。
+            const target = kb.scope === 'workspace' && kb.workspaceId ? String(kb.workspaceId) : undefined
+            if (target !== undefined) setListWorkspace(target)
+            await load(target)
+            await openDetail(kb.id)
+          },
         }),
       ),
     ) : null,

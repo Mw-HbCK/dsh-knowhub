@@ -48,6 +48,7 @@ const tests = [
   ['自动提炼运行时契约', 'tests/distill-runtime.test.mjs'],
   ['注入设置', 'tests/inject-settings.test.mjs'],
   ['P2 父级/反馈/导出导入/备份预览', 'tests/p2.test.mjs'],
+  ['知识库作用域（新建即可见）', 'tests/kb-scope.test.mjs'],
   ['客户端交互', 'tests/ui-interaction.test.mjs'],
 ]
 

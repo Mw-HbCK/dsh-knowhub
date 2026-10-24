@@ -10,7 +10,7 @@ import { all, openDatabase } from '../db/db.js'
 import { resolveStorageRoot } from '../paths.js'
 import {
   createKnowledgeBase, deleteKnowledgeBase, getKnowledgeBase, KbError,
-  listKnowledgeBases, updateKnowledgeBase,
+  listAllKnowledgeBases, listKnowledgeBases, updateKnowledgeBase,
 } from './store.js'
 import { countDocumentList, countDocuments, createDocument, DocError, getDocument, listDocuments, resolveParentId, searchDocuments } from '../search.js'
 import { addFeedback, FeedbackError, feedbackSummary, feedbackSummaries } from '../feedback.js'
@@ -85,6 +85,7 @@ export async function handleKbRequest(request: KbRequest): Promise<boolean> {
 
     if (method === 'GET' && path === '/kb') {
       const requested = str(url.searchParams.get('workspaceId'))
+      const wantAll = ['1', 'true', 'yes'].includes(str(url.searchParams.get('all')).toLowerCase())
       let workspaceId: string | null
       if (requested !== '') {
         const listed = await listWorkspaces(ctx)
@@ -98,11 +99,21 @@ export async function handleKbRequest(request: KbRequest): Promise<boolean> {
       }
       const listed = await listWorkspaces(ctx)
       const workspaces = listed.workspaces.map((workspace) => ({ id: workspace.id, title: workspace.title, path: workspace.path }))
-      const rows = listKnowledgeBases(db(), scopeKeysFor(workspaceId)).map((row) => ({
+      // 管理面全量视图：知识库可能建在任意工作区，只按「当前工作区」过滤会导致刚建好的库看不见
+      // （同名却报已存在）。all=1 返回所有未删除知识库，并带 workspaceTitle 便于辨认。
+      const source = wantAll ? listAllKnowledgeBases(db()) : listKnowledgeBases(db(), scopeKeysFor(workspaceId))
+      const rows = source.map((row) => ({
         ...withWorkspaceInfo(row, workspaces),
         documentCount: countDocuments(db(), row.id),
       }))
-      writeOk(res, { workspaceId, scopeKeys: scopeKeysFor(workspaceId), count: rows.length, knowledgeBases: rows })
+      writeOk(res, {
+        all: wantAll,
+        workspaceId,
+        currentWorkspaceId: workspaceId,
+        scopeKeys: scopeKeysFor(workspaceId),
+        count: rows.length,
+        knowledgeBases: rows,
+      })
       return true
     }
 

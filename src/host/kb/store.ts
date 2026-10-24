@@ -127,6 +127,17 @@ function findByName(db: Db, scopeKey: string, name: string): KbRow | null {
   return raw ? toRow(raw) : null
 }
 
+/**
+ * 同名冲突提示必须说清「已有的那条在哪个作用范围」：
+ * 面板默认只列一个工作区，用户很容易以为知识库没建成，实际上它建在别的工作区里。
+ */
+function duplicateMessage(existing: KbRow, workspaceTitle: string | null): string {
+  const where = existing.scope === 'user'
+    ? '用户级（所有工作区共享）'
+    : '工作区级 · ' + (workspaceTitle ?? existing.workspaceId ?? '未知工作区')
+  return '同一作用范围内已存在同名知识库：' + existing.name + '（' + where + '，id ' + existing.id + '）。可换个名称，或在「知识库」页把列表切到该工作区查看。'
+}
+
 export interface CreateKbOptions {
   storageRoot: string
   workspacePath?: string | null
@@ -140,9 +151,8 @@ export async function createKnowledgeBase(db: Db, input: KbInput, options: Creat
   const scope = str(input.scope) as Scope
   const workspaceId = scope === 'workspace' ? str(input.workspaceId) : null
   const scopeKey = scopeKeyOf(scope, workspaceId)
-  if (findByName(db, scopeKey, name)) {
-    throw new KbError('KB_NAME_DUPLICATED', 409, '同一作用范围内已存在同名知识库：' + name)
-  }
+  const existing = findByName(db, scopeKey, name)
+  if (existing) throw new KbError('KB_NAME_DUPLICATED', 409, duplicateMessage(existing, options.workspaceTitle ?? null))
   const timestamp = Date.now()
   const row: KbRow = {
     id: newId('kb'),
@@ -170,7 +180,8 @@ export async function createKnowledgeBase(db: Db, input: KbInput, options: Creat
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/UNIQUE constraint failed/i.test(message)) {
-      throw new KbError('KB_NAME_DUPLICATED', 409, '同一作用范围内已存在同名知识库：' + name)
+      const dup = findByName(db, scopeKey, name)
+      throw new KbError('KB_NAME_DUPLICATED', 409, dup ? duplicateMessage(dup, options.workspaceTitle ?? null) : '同一作用范围内已存在同名知识库：' + name)
     }
     throw error
   }

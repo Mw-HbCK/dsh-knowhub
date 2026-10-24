@@ -52,6 +52,7 @@ export function createRouter(ctx: any, config: any): { handle: (req: any, res: a
             'POST /knowhub/api/storage-probe {value}',
             'GET /knowhub/api/current-workspace',
             'GET|POST /knowhub/api/kb',
+            'GET /knowhub/api/kb?workspaceId=&all=1',
             'GET|PATCH|DELETE /knowhub/api/kb/:id',
             'GET|POST /knowhub/api/kb/:id/docs',
             'GET /knowhub/api/search?q=&tag=&kbId=&kind=&status=&sort=',
