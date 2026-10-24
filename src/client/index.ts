@@ -367,6 +367,45 @@ Object.assign(styles, {
   seg: { height: '24px', padding: '0 10px', borderRadius: '6px', border: '0', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', cursor: 'pointer' },
   segActive: { height: '24px', padding: '0 10px', borderRadius: '6px', border: '0', background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', cursor: 'pointer' },
 })
+
+// ---- 弹窗与浮层反馈（0.8.5：对齐 DSH 遮罩/阴影 token 与交互习惯）----
+Object.assign(styles, {
+  modalBackdrop: {
+    position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: '24px', background: 'var(--dsw-alias-bg-mask-2, rgba(0,0,0,0.45))',
+    backdropFilter: 'blur(var(--dsw-mask-blur, 2px))', WebkitBackdropFilter: 'blur(var(--dsw-mask-blur, 2px))',
+    animation: 'kh-backdrop-in 120ms ease-out',
+  },
+  modalCard: {
+    width: 'min(640px, calc(100vw - 48px))', maxHeight: '84vh', overflow: 'hidden',
+    display: 'flex', flexDirection: 'column', minHeight: 0,
+    background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)',
+    borderRadius: '14px', boxShadow: 'var(--dsw-shadow-lv3, 0 24px 60px rgba(0,0,0,0.35))',
+    animation: 'kh-modal-in 140ms cubic-bezier(0.2, 0.9, 0.3, 1)',
+  },
+  confirmBody: {
+    padding: '2px 0 8px', fontSize: '13px', lineHeight: '21px',
+    color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap',
+  },
+  toastHost: {
+    position: 'fixed', right: '20px', bottom: '20px', zIndex: 80, display: 'flex', flexDirection: 'column',
+    alignItems: 'flex-end', gap: '8px', maxWidth: 'min(420px, calc(100vw - 40px))', pointerEvents: 'none',
+  },
+  toast: {
+    pointerEvents: 'auto', display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '9px 12px',
+    borderRadius: '10px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)',
+    boxShadow: 'var(--dsw-shadow-lv2, 0 8px 24px rgba(0,0,0,0.18))', color: 'var(--dsw-alias-label-primary)',
+    fontSize: '13px', lineHeight: '20px', animation: 'kh-toast-in 160ms ease-out',
+  },
+  toastError: { borderColor: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)' },
+  toastSuccess: { borderColor: 'color-mix(in srgb, var(--dsw-alias-state-business-primary) 42%, transparent)' },
+  toastIcon: { flexShrink: 0, width: '18px', textAlign: 'center', fontSize: '12px', fontWeight: 600, lineHeight: '20px' },
+  toastText: { flex: 1, minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+  toastClose: {
+    flexShrink: 0, width: '20px', height: '20px', padding: 0, borderRadius: '6px', border: 0,
+    background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '11px',
+  },
+})
 const STYLE_ELEMENT_ID = 'knowhub-theme-styles'
 const THEME_STYLESHEET = [
   '.knowhub-page :focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
@@ -376,7 +415,14 @@ const THEME_STYLESHEET = [
   '.knowhub-page .kh-danger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent)!important}',
   '.knowhub-page .kh-scroll{scrollbar-gutter:stable;--dsh-scrollbar-width:9px;--dsh-scrollbar-thumb-border:2px}',
   '.knowhub-page input[type=checkbox],.knowhub-page input[type=radio]{accent-color:var(--dsw-alias-state-business-primary)}',
-  '@media (prefers-reduced-motion: reduce){.knowhub-page *{transition:none!important}}',
+  '.knowhub-page button{transition:background-color 120ms ease,border-color 120ms ease,color 120ms ease,opacity 120ms ease}',
+  '.knowhub-page button:not(:disabled):active{transform:translateY(0.5px)}',
+  '.knowhub-page button:disabled{cursor:not-allowed}',
+  '.knowhub-page [role=alert]{scroll-margin-top:12px}',
+  '@keyframes kh-backdrop-in{from{opacity:0}to{opacity:1}}',
+  '@keyframes kh-modal-in{from{opacity:0;transform:translateY(6px) scale(0.985)}to{opacity:1;transform:none}}',
+  '@keyframes kh-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}',
+  '@media (prefers-reduced-motion: reduce){.knowhub-page *,.knowhub-page *::before,.knowhub-page *::after{transition:none!important;animation-duration:1ms!important}}',
 ].join('\n')
 
 /** 注入一次主题样式表；卸载时移除。 */
@@ -404,7 +450,10 @@ async function request(path: string, options: { method?: string; body?: unknown 
     throw new Error('HTTP ' + response.status + '：响应不是合法 JSON')
   }
   if (!payload || payload.ok !== true) {
-    throw new Error(payload?.error?.message ?? ('HTTP ' + response.status))
+    const failure: any = new Error(payload?.error?.message ?? ('HTTP ' + response.status))
+    failure.status = response.status
+    failure.code = payload?.error?.code
+    throw failure
   }
   return payload.value
 }
@@ -427,6 +476,190 @@ function message(error: any): string {
 
 function Badge(props: any): any {
   return h('span', { style: props.style ?? styles.badge }, props.text)
+}
+
+// ---------- 全局反馈层：toast 浮层提示与确认框（替代常驻灰条与 window.confirm）----------
+
+type ToastKind = 'success' | 'error' | 'info'
+interface ToastItem { id: number; text: string; kind: ToastKind }
+
+const toastState: { items: ToastItem[]; listeners: Set<() => void>; seq: number } = { items: [], listeners: new Set(), seq: 0 }
+const TOAST_LIMIT = 4
+const TOAST_TIMEOUT: Record<ToastKind, number> = { success: 4000, info: 5000, error: 8000 }
+
+function emitToasts(): void {
+  for (const listener of [...toastState.listeners]) { try { listener() } catch { /* 订阅方异常不影响其它 */ } }
+}
+
+function removeToast(id: number): void {
+  if (!toastState.items.some((item) => item.id === id)) return
+  toastState.items = toastState.items.filter((item) => item.id !== id)
+  emitToasts()
+}
+
+/** 推入一条浮层提示（右下角、自动消失、可手动关闭）。 */
+function pushToast(text: string, kind: ToastKind = 'success'): number {
+  const content = String(text ?? '').trim()
+  if (content === '') return 0
+  toastState.seq += 1
+  const item: ToastItem = { id: toastState.seq, text: content, kind }
+  // 同文案不堆叠：先移除旧条目，只保留最新一条并重新计时
+  const rest = toastState.items.filter((entry) => entry.text !== content)
+  toastState.items = rest.concat([item]).slice(-TOAST_LIMIT)
+  emitToasts()
+  if (typeof setTimeout === 'function') {
+    const timer: any = setTimeout(() => removeToast(item.id), TOAST_TIMEOUT[kind] ?? 4000)
+    // 不拖住宿主进程退出（Node 下 unref，浏览器里 timer 没有这个方法）
+    if (typeof timer?.unref === 'function') timer.unref()
+  }
+  return item.id
+}
+
+const TOAST_ICON: Record<ToastKind, string> = { success: '✓', error: '!', info: 'i' }
+
+function ToastHost(): any {
+  const [items, setItems] = R.useState(toastState.items)
+  R.useEffect(() => {
+    const listener = () => setItems(toastState.items.slice())
+    toastState.listeners.add(listener)
+    listener()
+    return () => { toastState.listeners.delete(listener) }
+  }, [])
+  if (items.length === 0) return null
+  return h('div', { style: styles.toastHost },
+    items.map((item: ToastItem) => h('div', {
+      key: item.id,
+      role: item.kind === 'error' ? 'alert' : 'status',
+      'aria-live': item.kind === 'error' ? 'assertive' : 'polite',
+      style: { ...styles.toast, ...(item.kind === 'error' ? styles.toastError : item.kind === 'success' ? styles.toastSuccess : {}) },
+    },
+      h('span', {
+        style: {
+          ...styles.toastIcon,
+          color: item.kind === 'error' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)',
+        },
+      }, TOAST_ICON[item.kind]),
+      h('span', { style: styles.toastText }, item.text),
+      h('button', {
+        type: 'button', style: styles.toastClose, title: '关闭提示', 'aria-label': '关闭提示',
+        onClick: () => removeToast(item.id),
+      }, '✕'),
+    )),
+  )
+}
+
+/** 组件内的临时 notice 文本统一转成 toast：不占布局、自动消失。 */
+function useNoticeToast(notice: string | null, clear: () => void): void {
+  R.useEffect(() => {
+    const text = String(notice ?? '').trim()
+    if (text === '') return
+    pushToast(text, 'success')
+    clear()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notice])
+}
+
+interface ConfirmOptions {
+  title?: string
+  text: string
+  confirmText?: string
+  cancelText?: string
+  danger?: boolean
+}
+
+interface ConfirmState extends ConfirmOptions { resolve: (ok: boolean) => void }
+
+const confirmState: { current: ConfirmState | null; listeners: Set<() => void> } = { current: null, listeners: new Set() }
+
+function emitConfirm(): void {
+  for (const listener of [...confirmState.listeners]) { try { listener() } catch { /* 忽略 */ } }
+}
+
+/** Promise 化的确认框：await askConfirm({ text }) 返回 true / false。 */
+function askConfirm(options: ConfirmOptions): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (confirmState.current !== null) {
+      const previous = confirmState.current
+      confirmState.current = null
+      try { previous.resolve(false) } catch { /* 忽略 */ }
+    }
+    confirmState.current = { ...options, resolve }
+    emitConfirm()
+  })
+}
+
+function settleConfirm(ok: boolean): void {
+  const current = confirmState.current
+  if (current === null) return
+  confirmState.current = null
+  emitConfirm()
+  try { current.resolve(ok) } catch { /* 忽略 */ }
+}
+
+/** DSH 风格弹窗外壳：统一遮罩模糊、圆角阴影、进出场动画、Esc 关闭与页面滚动锁。 */
+function Modal(props: any): any {
+  const { onClose, maxWidth, children, closeOnMask = true } = props
+  R.useEffect(() => {
+    const doc: any = (globalThis as any).document
+    if (!doc || !doc.body) return undefined
+    const previous = doc.body.style.overflow
+    doc.body.style.overflow = 'hidden'
+    return () => { doc.body.style.overflow = previous }
+  }, [])
+  R.useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+    const onKey = (event: any) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return h('div', {
+    style: styles.modalBackdrop,
+    onMouseDown: (event: any) => { if (closeOnMask && event.target === event.currentTarget) onClose() },
+  },
+    h('div', {
+      style: maxWidth ? { ...styles.modalCard, maxWidth } : styles.modalCard,
+      role: 'dialog', 'aria-modal': 'true',
+    }, children),
+  )
+}
+
+function ConfirmHost(): any {
+  const [pending, setPending] = R.useState(confirmState.current)
+  R.useEffect(() => {
+    const listener = () => setPending(confirmState.current)
+    confirmState.listeners.add(listener)
+    listener()
+    return () => { confirmState.listeners.delete(listener) }
+  }, [])
+  R.useEffect(() => {
+    if (pending === null || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+    const onKey = (event: any) => {
+      if (event.key !== 'Enter') return
+      if (typeof event.preventDefault === 'function') event.preventDefault()
+      settleConfirm(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pending])
+  if (pending === null) return null
+  const confirmStyle = pending.danger
+    ? { ...styles.primary, border: '1px solid var(--dsw-alias-state-error-primary)', background: 'var(--dsw-alias-state-error-primary)' }
+    : styles.primary
+  return h(Modal, { onClose: () => settleConfirm(false), maxWidth: '440px' },
+    h('div', { style: styles.dialog },
+      h('div', { style: styles.dialogHead },
+        h('div', { style: { minWidth: 0 } }, h('div', { style: styles.dialogTitle }, pending.title ?? '确认操作')),
+      ),
+      h('div', { style: styles.dialogBody }, h('div', { style: styles.confirmBody }, pending.text)),
+      h('div', { style: styles.dialogFoot },
+        h('div', { style: styles.dialogFootHint }, 'Esc 取消 · Enter 确认'),
+        h('div', { style: { display: 'flex', gap: '8px' } },
+          h('button', { type: 'button', style: styles.button, className: 'kh-hover', onClick: () => settleConfirm(false) }, pending.cancelText ?? '取消'),
+          h('button', { type: 'button', style: confirmStyle, className: pending.danger ? '' : 'kh-primary', onClick: () => settleConfirm(true) }, pending.confirmText ?? '确认'),
+        ),
+      ),
+    ),
+  )
 }
 
 // ---------- 知识库 ----------
@@ -1236,40 +1469,34 @@ function KbView(props: any): any {
         ),
       ),
     ),
-    showForm ? h('div', { style: styles.modalBackdrop, onClick: (event: any) => { if (event.target === event.currentTarget) setShowForm(false) } },
-      h('div', { style: styles.modalCard },
-        h(CreateKbForm, {
-          models, workspaces, currentWorkspaceId: currentWorkspace?.workspaceId ?? '',
-          onCancel: () => setShowForm(false),
-          onCreated: async (kb: any) => {
-            setShowForm(false)
-            notify('知识库「' + kb.name + '」已创建。下一步：在详情里点「开始初始化」。')
-            // 新建的库可能绑在别的工作区：直接把列表切过去并打开详情，避免「建完了却看不见」。
-            const target = kb.scope === 'workspace' && kb.workspaceId ? String(kb.workspaceId) : undefined
-            if (target !== undefined) setListWorkspace(target)
-            await load(target)
-            await openDetail(kb.id)
-          },
-        }),
-      ),
+    showForm ? h(Modal, { onClose: () => setShowForm(false), maxWidth: '680px' },
+      h(CreateKbForm, {
+        models, workspaces, currentWorkspaceId: currentWorkspace?.workspaceId ?? '',
+        onCancel: () => setShowForm(false),
+        onCreated: async (kb: any) => {
+          setShowForm(false)
+          notify('知识库「' + kb.name + '」已创建。下一步：在详情里点「开始初始化」。')
+          // 新建的库可能绑在别的工作区：直接把列表切过去并打开详情，避免「建完了却看不见」。
+          const target = kb.scope === 'workspace' && kb.workspaceId ? String(kb.workspaceId) : undefined
+          if (target !== undefined) setListWorkspace(target)
+          await load(target)
+          await openDetail(kb.id)
+        },
+      }),
     ) : null,
-    importOpen && detail !== null ? h('div', { style: styles.modalBackdrop, onClick: (event: any) => { if (event.target === event.currentTarget) setImportOpen(false) } },
-      h('div', { style: { ...styles.modalCard, maxWidth: '720px' } },
-        h(ImportMarkdownForm, {
-          kbId: detail.knowledgeBase.id, kbName: detail.knowledgeBase.name,
-          onCancel: () => setImportOpen(false),
-          onDone: async () => { await openDetail(detail.knowledgeBase.id); await load() },
-        }),
-      ),
+    importOpen && detail !== null ? h(Modal, { onClose: () => setImportOpen(false), maxWidth: '760px' },
+      h(ImportMarkdownForm, {
+        kbId: detail.knowledgeBase.id, kbName: detail.knowledgeBase.name,
+        onCancel: () => setImportOpen(false),
+        onDone: async () => { await openDetail(detail.knowledgeBase.id); await load() },
+      }),
     ) : null,
-    editOpen && detail !== null ? h('div', { style: styles.modalBackdrop, onClick: (event: any) => { if (event.target === event.currentTarget) setEditOpen(false) } },
-      h('div', { style: styles.modalCard },
-        h(EditKbForm, {
-          kb: detail.knowledgeBase, models,
-          onCancel: () => setEditOpen(false),
-          onSaved: async (kb: any) => { setEditOpen(false); notify('知识库「' + kb.name + '」配置已更新'); await openDetail(kb.id); await load() },
-        }),
-      ),
+    editOpen && detail !== null ? h(Modal, { onClose: () => setEditOpen(false), maxWidth: '680px' },
+      h(EditKbForm, {
+        kb: detail.knowledgeBase, models,
+        onCancel: () => setEditOpen(false),
+        onSaved: async (kb: any) => { setEditOpen(false); notify('知识库「' + kb.name + '」配置已更新'); await openDetail(kb.id); await load() },
+      }),
     ) : null,
   )
 }
@@ -1946,8 +2173,7 @@ function DocumentDiffPage(props: any): any {
     ),
     diffPane,
     busy !== null ? h('div', { style: styles.hint }, busy + '…') : null,
-    error !== null ? h('div', { style: styles.error }, error) : null,
-    notice !== '' ? h('div', { style: styles.success }, notice) : null,
+    error !== null ? h('div', { style: styles.error, role: 'alert' }, error) : null,
     actions,
   )
 }
@@ -1959,6 +2185,7 @@ function ReviewView(props: any): any {
   const [loading, setLoading] = R.useState(false)
   const [error, setError] = R.useState(null)
   const [notice, setNotice] = R.useState('')
+  useNoticeToast(notice, () => setNotice(''))
   const [busy, setBusy] = R.useState(null)
   const [diffPage, setDiffPage] = R.useState(null as any)
   const [proposalEdit, setProposalEdit] = R.useState(null)
@@ -2247,8 +2474,7 @@ function ReviewView(props: any): any {
       h('span', { style: styles.hint }, '单次最多 ' + LIMIT + ' 条，执行前会二次确认'),
     ) : null,
     busy !== null ? h('div', { style: styles.hint }, busy + '…') : null,
-    error !== null ? h('div', { style: styles.error }, error) : null,
-    notice !== '' ? h('div', { style: styles.success }, notice) : null,
+    error !== null ? h('div', { style: styles.error, role: 'alert' }, error) : null,
     queue === null ? h('div', { style: styles.empty }, loading ? '正在读取待审核数据…' : '暂无数据') : h('div', null,
       sectionHead('候选知识', counts.proposals, 'proposal', queue.proposals ?? []),
       (queue.proposals ?? []).length === 0 ? h('div', { style: styles.empty }, '没有符合条件的候选。Agent 或面板提交的知识会先进入这里。') : (queue.proposals ?? []).map(proposalCard),
@@ -2390,7 +2616,10 @@ function EmptyState(props: any): any {
 }
 
 function ErrorBox(props: any): any {
-  return h('div', { style: styles.error }, props.text)
+  return h('div', { style: styles.error, role: 'alert' },
+    h('span', { style: { marginRight: '6px', fontWeight: 600 } }, '⚠'),
+    h('span', null, String(props.text ?? '')),
+  )
 }
 
 /** M5 总览：知识库/知识/审核/任务/最近活动一屏可见，点击可直接跳到对应页签。 */
@@ -2616,6 +2845,7 @@ function DocsExplorer(props: any): any {
   const [loading, setLoading] = R.useState(false)
   const [error, setError] = R.useState(null)
   const [notice, setNotice] = R.useState('')
+  useNoticeToast(notice, () => setNotice(''))
   const [selectedId, setSelectedId] = R.useState('')
   const [detail, setDetail] = R.useState(null)
   const [detailError, setDetailError] = R.useState(null)
@@ -2699,7 +2929,12 @@ function DocsExplorer(props: any): any {
   }
   const markStale = async () => {
     if (detail === null) return
-    if (!window.confirm('确认把这条知识标记为过时？标记后仍保留正文与历史版本，可在审核里恢复。')) return
+    const ok = await askConfirm({
+      title: '标记为过时',
+      text: '确认把这条知识标记为过时？标记后仍保留正文与历史版本，可在审核里恢复。',
+      confirmText: '确认标记过时',
+    })
+    if (!ok) return
     setBusy(true); setDetailError(null)
     try {
       await request('/kb/' + encodeURIComponent(detail.document.kbId) + '/docs/' + encodeURIComponent(detail.document.id) + '/review', {
@@ -2738,7 +2973,12 @@ function DocsExplorer(props: any): any {
   }
   const restoreVersion = async (version: number) => {
     if (docBasePath() === '') return
-    if (!window.confirm('确认恢复为第 ' + version + ' 版内容？恢复会以新版本方式记录，不会静默覆盖当前内容。')) return
+    const ok = await askConfirm({
+      title: '恢复历史版本',
+      text: '确认恢复为第 ' + version + ' 版内容？恢复会以新版本方式记录，不会静默覆盖当前内容。',
+      confirmText: '确认恢复此版本',
+    })
+    if (!ok) return
     setDetailError(null); setVersionBusy('恢复第 ' + version + ' 版…')
     try {
       const value = await request(docBasePath() + '/restore', { method: 'POST', body: { version, actor: 'web面板', note: '从版本历史恢复' } })
@@ -2911,7 +3151,6 @@ function DocsExplorer(props: any): any {
       ),
       h('div', { style: styles.readerScroll, className: 'kh-scroll' },
         h('div', { style: styles.readerInner },
-          notice !== '' ? h('div', { style: styles.success }, notice) : null,
           detailError !== null ? ErrorBox({ text: detailError }) : null,
           detail === null
             ? (selectedId === '' ? EmptyState({ text: '从左侧选择一条知识查看正文。' }) : null)
@@ -3047,7 +3286,6 @@ function SettingsView(): any {
   const [stats, setStats] = R.useState(null)
   const [runs, setRuns] = R.useState([])
   const [error, setError] = R.useState(null)
-  const [notice, setNotice] = R.useState('')
   const [busy, setBusy] = R.useState('')
   const [target, setTarget] = R.useState('')
   const [backupNote, setBackupNote] = R.useState('')
@@ -3083,41 +3321,83 @@ function SettingsView(): any {
       backupKeep: Number(form.backupKeep),
       excludeDirs: String(form.excludeDirsText ?? '').split(/[\n,]/).map((item: string) => item.trim()).filter((item: string) => item !== ''),
     }
-    setBusy('save'); setError(null); setNotice('')
+    setBusy('save'); setError(null)
     request('/settings', { method: 'PATCH', body }).then((value: any) => {
       setSnapshot(value); setForm({ ...value.settings, excludeDirsText: (value.settings?.excludeDirs ?? []).join('\n') })
-      setNotice('设置已保存')
+      pushToast('设置已保存', 'success')
     }).catch((failure: any) => setError(message(failure))).then(() => setBusy(''))
   }
-  const migrate = (dryRun: boolean) => {
+  const migrate = async (dryRun: boolean) => {
     if (target.trim() === '') { setError('请先填写目标目录绝对路径'); return }
-    if (!dryRun && !window.confirm('确认把知识中心数据迁移到：' + target + '？\n迁移前会自动创建备份，校验失败时不会切换位置。')) return
-    setBusy(dryRun ? 'dry' : 'migrate'); setError(null); setNotice('')
-    request('/settings/storage/migrate', { method: 'POST', body: { target: target.trim(), dryRun } }).then((value: any) => {
-      setNotice(dryRun ? ('预检通过：将复制 ' + (value.willCopy?.files ?? 0) + ' 个文件，共 ' + formatBytes(value.willCopy?.bytes ?? 0)) : ('已迁移到 ' + value.to + '；请重启 DSH 后生效（原数据仍在 ' + value.from + '）'))
-    }).catch((failure: any) => setError(message(failure))).then(() => setBusy(''))
+    if (!dryRun) {
+      const ok = await askConfirm({
+        title: '迁移知识中心数据',
+        text: '确认把知识中心数据迁移到：' + target + '？\n迁移前会自动创建备份，校验失败时不会切换位置。',
+        confirmText: '开始迁移',
+      })
+      if (!ok) return
+    }
+    setBusy(dryRun ? 'dry' : 'migrate'); setError(null)
+    try {
+      const value = await request('/settings/storage/migrate', { method: 'POST', body: { target: target.trim(), dryRun } })
+      pushToast(dryRun
+        ? ('预检通过：将复制 ' + (value.willCopy?.files ?? 0) + ' 个文件，共 ' + formatBytes(value.willCopy?.bytes ?? 0))
+        : ('已迁移到 ' + value.to + '；请重启 DSH 后生效（原数据仍在 ' + value.from + '）'), dryRun ? 'info' : 'success')
+    } catch (failure: any) {
+      pushToast(message(failure), 'error')
+    } finally {
+      setBusy('')
+    }
   }
-  const createBackup = () => {
-    setBusy('backup'); setError(null); setNotice('')
-    request('/backups', { method: 'POST', body: { note: backupNote.trim() } }).then((value: any) => {
-      setNotice('备份完成：' + value.kbCount + ' 个知识库 / ' + value.docCount + ' 条知识 / ' + formatBytes(value.bytes))
+  const createBackup = async () => {
+    setBusy('backup'); setError(null)
+    try {
+      const value = await request('/backups', { method: 'POST', body: { note: backupNote.trim() } })
+      pushToast('备份完成：' + value.kbCount + ' 个知识库 / ' + value.docCount + ' 条知识 / ' + formatBytes(value.bytes), 'success')
       setBackupNote(''); loadBackups()
-    }).catch((failure: any) => setError(message(failure))).then(() => setBusy(''))
+    } catch (failure: any) {
+      pushToast(message(failure), 'error')
+    } finally {
+      setBusy('')
+    }
   }
-  const openPreview = (item: any) => {
+  const openPreview = async (item: any) => {
     if (busy !== '') return
-    setBusy('preview:' + item.id); setError(null); setNotice('')
-    request('/backups/' + encodeURIComponent(item.id) + '/preview').then((value: any) => setPreview(value))
-      .catch((failure: any) => setError(message(failure))).then(() => setBusy(''))
+    setBusy('preview:' + item.id); setError(null)
+    try {
+      setPreview(await request('/backups/' + encodeURIComponent(item.id) + '/preview'))
+    } catch (failure: any) {
+      pushToast(message(failure), 'error')
+    } finally {
+      setBusy('')
+    }
   }
-  const restore = (item: any) => {
-    if (!window.confirm('确认从备份 ' + item.file + ' 恢复？\n恢复采用合并语义：缺失的库与知识会重建，正文不同的知识只生成待审核候选，不会覆盖现有内容。')) return
-    setBusy(item.id); setError(null); setNotice('')
-    request('/backups/' + encodeURIComponent(item.id) + '/restore', { method: 'POST', body: {} }).then((value: any) => {
-      setNotice('恢复完成：重建知识库 ' + value.createdKbs + ' 个 / 知识 ' + value.createdDocs + ' 条 / 新候选 ' + value.proposals + ' 条 / 跳过 ' + value.skipped + ' 条')
+  const restore = async (item: any) => {
+    const ok = await askConfirm({
+      title: '从备份恢复',
+      text: '确认从备份 ' + item.file + ' 恢复？\n恢复采用合并语义：缺失的库与知识会重建，正文不同的知识只生成待审核候选，不会覆盖现有内容。',
+      confirmText: '开始恢复',
+    })
+    if (!ok) return
+    setBusy(item.id); setError(null)
+    try {
+      const value = await request('/backups/' + encodeURIComponent(item.id) + '/restore', { method: 'POST', body: {} })
+      pushToast('恢复完成：重建知识库 ' + value.createdKbs + ' 个 / 知识 ' + value.createdDocs + ' 条 / 新候选 ' + value.proposals + ' 条 / 跳过 ' + value.skipped + ' 条', 'success')
       loadBackups()
-    }).catch((failure: any) => setError(message(failure))).then(() => setBusy(''))
+    } catch (failure: any) {
+      pushToast(message(failure), 'error')
+    } finally {
+      setBusy('')
+    }
   }
+
+  // 备份预览是独立浮层：补 Esc 关闭（与其它弹窗一致）。
+  R.useEffect(() => {
+    if (preview === null || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+    const onKey = (event: any) => { if (event.key === 'Escape') setPreview(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [preview])
 
   if (snapshot === null || form === null) {
     return error !== null ? h('div', null, ErrorBox({ text: error }), h('button', { type: 'button', style: styles.button, className: 'kh-hover', onClick: loadSettings }, '重试')) : Loading({ text: '正在读取设置…' })
@@ -3126,7 +3406,6 @@ function SettingsView(): any {
   const checkbox = (key: string, label: string, hintText: string) => settingsCheckbox(form, patch, key, label, hintText)
   return h('div', null,
     error !== null ? ErrorBox({ text: error }) : null,
-    notice !== '' ? h('div', { style: styles.success }, notice) : null,
     h('div', { style: styles.card },
       h('div', { style: styles.cardTitle }, '知识库默认设置'),
       h('div', { style: styles.field },
@@ -3188,8 +3467,7 @@ function SettingsView(): any {
       h('div', { style: styles.meta, marginBottom: '6px' }, h('span', null, '自动提炼：' + (form.autoDistill ? '已开启' : '未开启')), h('span', null, '最短字符数：' + form.distillMinChars)),
       runs.length === 0 ? EmptyState({ text: '还没有提炼记录。开启自动提炼后，会话结束时会自动生成待审核候选。' }) : h('pre', { style: styles.pre }, runs.map((run: any) => formatTime(run.createdAt) + '  ' + run.status + '  新建 ' + run.createdCount + ' / 跳过 ' + run.skippedCount + '  ' + (run.modelProvider ?? '') + '/' + (run.modelId ?? '') + (run.note ? '  ' + run.note : '')).join('\n')),
     ),
-    preview !== null ? h('div', { style: styles.modalBackdrop, onClick: (event: any) => { if (event.target === event.currentTarget) setPreview(null) } },
-      h('div', { style: { ...styles.modalCard, maxWidth: '760px' } },
+    preview !== null ? h(Modal, { onClose: () => setPreview(null), maxWidth: '800px' },
         h('div', { style: styles.dialog },
           h('div', { style: styles.dialogHead },
             h('div', { style: { minWidth: 0 } },
@@ -3232,7 +3510,6 @@ function SettingsView(): any {
             }, '按合并语义恢复…') : null,
           ),
         ),
-      ),
     ) : null,
     h('div', { style: styles.sectionTitle }, '环境与接口诊断'),
     h(DiagnosticsView, null),
@@ -3265,7 +3542,6 @@ function Page(): any {
   const [kbList, setKbList] = R.useState(null)
   const [bootError, setBootError] = R.useState(null)
   const [booting, setBooting] = R.useState(false)
-  const [notice, setNotice] = R.useState('')
   const [reloadKey, setReloadKey] = R.useState(0)
   const [reviewCount, setReviewCount] = R.useState(0)
 
@@ -3298,7 +3574,7 @@ function Page(): any {
     return () => { alive = false }
   }, [reloadKey])
 
-  const notify = (text: string) => setNotice(text)
+  const notify = (text: string) => { pushToast(text, 'success') }
   const refreshReviewCount = async () => {
     try {
       const value = await request('/review?limit=1')
@@ -3310,12 +3586,11 @@ function Page(): any {
 
   const renderOverlay = (): any => h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
     h('div', { style: styles.backBar },
-      h('button', { type: 'button', style: styles.linkButton, className: 'kh-hover', onClick: () => { setView(''); setNotice('') } }, '← 返回知识中心'),
+      h('button', { type: 'button', style: styles.linkButton, className: 'kh-hover', onClick: () => setView('') }, '← 返回知识中心'),
       h('h2', { style: styles.headerTitle }, OVERLAY_TITLES[view] ?? view),
     ),
     h('div', { style: styles.overlayScroll, className: 'kh-scroll' },
       h('div', { style: styles.overlayInner },
-        notice !== '' ? h('div', { style: styles.success }, notice) : null,
         view === 'review' ? h(ReviewView, { knowledgeBases: kbList ?? [] }) : null,
         view === 'search' ? h('div', null,
           h(SearchView, { knowledgeBases: kbList ?? [] }),
@@ -3353,7 +3628,7 @@ function Page(): any {
       h('div', { style: styles.headerTabs }, MAIN_TABS.map((item) => h('button', {
         key: item.key, type: 'button',
         style: view === '' && tab === item.key ? styles.headerTabActive : styles.headerTab,
-        onClick: () => { setTab(item.key); setView(''); setNotice('') },
+        onClick: () => { setTab(item.key); setView('') },
       }, item.label))),
       h('div', { style: styles.headerActions },
         booting ? h('span', { style: styles.status }, '读取环境中…') : null,
@@ -3364,9 +3639,10 @@ function Page(): any {
         h('button', { type: 'button', style: styles.button, className: 'kh-hover', onClick: () => { setReloadKey(reloadKey + 1); void refreshReviewCount() } }, '刷新'),
       ),
     ),
-    bootError !== null ? h('div', { style: { ...styles.error, margin: '10px 24px 0' } }, bootError) : null,
-    notice !== '' && view === '' ? h('div', { style: { ...styles.success, margin: '10px 24px 0' } }, notice) : null,
+    bootError !== null ? h('div', { style: { ...styles.error, margin: '10px 24px 0' }, role: 'alert' }, bootError) : null,
     view !== '' ? renderOverlay() : renderTab(),
+    h(ToastHost, null),
+    h(ConfirmHost, null),
   )
 }
 
@@ -3387,7 +3663,7 @@ function KnowHubIcon(props: any): any {
 }
 
 /** 仅供构建期渲染冒烟测试使用（宿主不使用）。 */
-export const __smoke = { Page, DocsExplorer, KbView, CreateKbForm, EditKbForm, ImportMarkdownForm, ReviewView, SearchView, SettingsView, SettingsInjectionCard, DocumentDiffPage, diffUnifiedRows, diffSplitRows, renderMarkdown }
+export const __smoke = { Page, DocsExplorer, KbView, CreateKbForm, EditKbForm, ImportMarkdownForm, ReviewView, SearchView, SettingsView, SettingsInjectionCard, DocumentDiffPage, diffUnifiedRows, diffSplitRows, renderMarkdown, Modal, ToastHost, ConfirmHost, pushToast, askConfirm, settleConfirm, useNoticeToast, toastSnapshot: () => toastState.items.map((item: ToastItem) => item.text) }
 
 export const inject = ['slots']
 

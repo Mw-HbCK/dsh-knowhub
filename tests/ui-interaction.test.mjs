@@ -1,5 +1,5 @@
 // P3 交互测试用例：用 tools/interaction-harness.mjs 的真实 hook 运行时驱动面板组件。
-import { smoke, mount, text, byText, click, textareaAt, typeInto, selectByValue, choose, inputByPlaceholder, findNodes, nodeText, resetCalls, calls, testCase, check, checkText, sleep, failureCount, checkCount } from '../tools/interaction-harness.mjs'
+import { smoke, mount, mountHosted, toasts, text, byText, click, textareaAt, typeInto, selectByValue, choose, inputByPlaceholder, findNodes, nodeText, resetCalls, calls, testCase, check, checkText, sleep, failureCount, checkCount } from '../tools/interaction-harness.mjs'
 
 const now = Date.now()
 const kb = { id: 'kb1', name: '演示知识库', scope: 'workspace', workspaceId: 'ws-1', workspaceTitle: '演示项目', workspacePath: 'C:/demo', status: 'ready', modelProvider: 'amd', modelId: 'DeepSeek-V4-Flash', modelStrategy: 'balanced', documentCount: 120, updatedAt: now, createdAt: now, scopeKey: 'ws:ws-1' }
@@ -68,7 +68,7 @@ await testCase('DocsExplorer 反馈：点击有帮助 → POST feedback 且显�
     if (request.url.match(/\/kb\/kb1\/docs\/doc\d+$/)) return detailHandler(request)
     return {}
   })
-  await mount(smoke.DocsExplorer, {})
+  await mountHosted(smoke.DocsExplorer, {})
   await click('知识条目 1')
   await sleep(30)
   await click('有帮助')
@@ -76,7 +76,9 @@ await testCase('DocsExplorer 反馈：点击有帮助 → POST feedback 且显�
   check(posts.length === 1, '应当只提交一次反馈，实际 ' + posts.length)
   check(posts[0] && posts[0].method === 'POST', '反馈必须是 POST')
   check(posts[0] && posts[0].body && posts[0].body.helpful === true, '帮助反馈的 helpful 应为 true')
-  checkText('已记录', '提交反馈后的提示')
+  // 0.8.5：临时提示改为右下角 toast（由 ToastHost 渲染），不再占用页面布局
+  checkText('已记录', '提交反馈后的 toast 提示')
+  check(toasts().some((item) => item.includes('已记录')), 'toast 队列应包含提交反馈的结果，实际：' + JSON.stringify(toasts()))
 })
 
 await testCase('ImportMarkdownForm：粘贴内容 → POST import 并展示结果', async () => {
@@ -137,13 +139,41 @@ await testCase('ReviewView 跨页全选：按筛选翻页凑满 50 条并提示�
     if (request.url.includes('/review/bulk')) return { results: [], approved: 0, rejected: 0, failed: 0, message: 'ok' }
     return {}
   })
-  await mount(smoke.ReviewView, { knowledgeBases: [{ id: 'kb1', name: '演示知识库' }] })
+  await mountHosted(smoke.ReviewView, { knowledgeBases: [{ id: 'kb1', name: '演示知识库' }] })
   checkText('全选筛选结果', '跨页全选按钮')
   await click('全选筛选结果')
   await sleep(50)
   const reviewPages = calls.filter((item) => item.url.includes('/review?') && item.url.includes('limit=100')).length
   check(reviewPages >= 1, '跨页全选应按 limit=100 拉取筛选结果，实际请求 ' + reviewPages + ' 次')
-  checkText('已选择', '全选后的提示')
+  checkText('已选择', '全选后的 toast 提示')
+  check(toasts().some((item) => item.includes('已选择')), 'toast 队列应包含全选结果，实际：' + JSON.stringify(toasts()))
+})
+
+await testCase('确认框：危险操作先弹确认，取消不发请求、确认后才提交', async () => {
+  resetCalls((request) => {
+    if (request.url.includes('/documents?')) return docListHandler(request)
+    if (request.url.match(/\/kb\/kb1\/docs\/doc1\/review$/)) return { document: { ...allDocs[0], status: 'stale' }, message: '已标记为过时' }
+    if (request.url.match(/\/kb\/kb1\/docs\/doc\d+$/)) return detailHandler(request)
+    return {}
+  })
+  await mountHosted(smoke.DocsExplorer, {})
+  await click('知识条目 1')
+  await sleep(30)
+  // 第一次：弹确认框但点「取消」，不应发出任何审核请求
+  await click('标记过时')
+  checkText('标记为过时', '确认框标题')
+  checkText('Esc 取消 · Enter 确认', '确认框快捷提示')
+  await click('取消')
+  const afterCancel = calls.filter((item) => item.url.includes('/review')).length
+  check(afterCancel === 0, '取消后不应发出审核请求，实际 ' + afterCancel + ' 次')
+  // 第二次：确认后才提交
+  await click('标记过时')
+  await click('确认标记过时')
+  await sleep(40)
+  const posts = calls.filter((item) => item.method === 'POST' && item.url.match(/\/kb\/kb1\/docs\/doc1\/review$/))
+  check(posts.length === 1, '确认后应提交一次标记过时请求，实际 ' + posts.length)
+  check(!!(posts[0] && posts[0].body && posts[0].body.action === 'mark_stale'), 'body.action 应为 mark_stale')
+  check(toasts().some((item) => item.includes('已标记为过时')), 'toast 队列应包含标记结果，实际：' + JSON.stringify(toasts()))
 })
 
 await testCase('ReviewView 草稿卡：点「查看详情与差异」进入知识对比页并可直接批准', async () => {

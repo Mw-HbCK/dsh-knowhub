@@ -207,6 +207,20 @@ async function mount(type, props) {
   await settle()
   return rootVnode.rendered
 }
+/** 挂载视图本身 + 全局反馈层（ToastHost/ConfirmHost），用于断言 toast 与确认框这类跨组件 UI。 */
+async function mountHosted(type, props) {
+  const Hosted = function Hosted() {
+    return React.createElement(Fragment, null,
+      React.createElement(type, props || {}),
+      smoke.ToastHost ? React.createElement(smoke.ToastHost, null) : null,
+      smoke.ConfirmHost ? React.createElement(smoke.ConfirmHost, null) : null)
+  }
+  return mount(Hosted, {})
+}
+/** 当前 toast 文案（组件外部可观测，用于断言"操作成功后的反馈"）。 */
+function toasts() {
+  return typeof smoke.toastSnapshot === 'function' ? smoke.toastSnapshot() : []
+}
 function tree() { return rootVnode.rendered }
 function text() { return collectText(tree()) }
 function findNodes(predicate) {
@@ -281,4 +295,4 @@ async function testCase(name, fn) {
 
 function failureCount() { return failures }
 function checkCount() { return checks }
-export { smoke, mount, tree, text, findNodes, nodeText, byText, click, inputByPlaceholder, textareaAt, typeInto, selectByValue, choose, resetCalls, calls, settle, testCase, check, checkText, sleep, failureCount, checkCount }
+export { smoke, mount, mountHosted, toasts, tree, text, findNodes, nodeText, byText, click, inputByPlaceholder, textareaAt, typeInto, selectByValue, choose, resetCalls, calls, settle, testCase, check, checkText, sleep, failureCount, checkCount }

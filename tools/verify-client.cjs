@@ -117,8 +117,11 @@ console.log('registrations:', registrations.map((r) => r.name + '/' + r.key + (r
 for (const reg of registrations) renderComponent(reg.component, {}, 'slot:' + reg.name)
 
 const smoke = moduleExports.__smoke || {}
+// 这些不是"首屏可渲染组件"：Page/renderMarkdown 单独断言；反馈层在下方做专项断言
+// （askConfirm 返回 Promise、pushToast 返回 id，直接当组件渲染会污染 toast 队列）。
+const SKIP_RENDER = new Set(['Page', 'renderMarkdown', 'Modal', 'ToastHost', 'ConfirmHost', 'pushToast', 'askConfirm', 'settleConfirm', 'useNoticeToast'])
 for (const name of Object.keys(smoke)) {
-  if (name === 'Page' || name === 'renderMarkdown') continue
+  if (SKIP_RENDER.has(name)) continue
   const props = name === 'KbView'
     ? { models: [{ provider: 'amd', id: 'DeepSeek-V4-Flash', name: 'DeepSeek-V4-Flash' }], workspaces: [], currentWorkspace: { workspaceId: 'ws-1', title: '演示项目' }, notify: () => {} }
     : name === 'EditKbForm'
@@ -184,6 +187,56 @@ if (typeof smoke.SettingsInjectionCard === 'function') {
     console.log('INJECTION CARD FAIL: ' + (error && error.message ? error.message : error))
   }
 }
+// ---------- 0.8.5 全局反馈层：弹窗外壳 / toast / 确认框 ----------
+if (typeof smoke.Modal === 'function') {
+  try {
+    const text = String(renderNode({ type: smoke.Modal, props: { onClose: () => {}, maxWidth: '600px' }, children: [React.createElement('div', null, '弹窗内容测试')] }))
+    console.log('RENDER OK   ' + 'Modal'.padEnd(14) + ' chars=' + text.length + ' text=' + JSON.stringify(text.slice(0, 80)))
+    if (!text.includes('弹窗内容测试')) throw new Error('modal children missing')
+    console.log('MODAL OK')
+  } catch (error) {
+    failures += 1
+    console.log('MODAL FAIL: ' + (error && error.message ? error.message : error))
+  }
+}
+if (typeof smoke.ToastHost === 'function' && typeof smoke.pushToast === 'function') {
+  try {
+    smoke.pushToast('设置已保存', 'error')
+    const text = String(renderNode({ type: smoke.ToastHost, props: {}, children: [] }))
+    console.log('RENDER OK   ' + 'ToastHost'.padEnd(14) + ' chars=' + text.length + ' text=' + JSON.stringify(text.slice(0, 120)))
+    for (const probe of ['设置已保存', '!', '✕']) {
+      if (!text.includes(probe)) throw new Error('toast text missing: ' + probe)
+    }
+    console.log('TOAST OK')
+  } catch (error) {
+    failures += 1
+    console.log('TOAST FAIL: ' + (error && error.message ? error.message : error))
+  }
+}
+if (typeof smoke.ConfirmHost === 'function' && typeof smoke.askConfirm === 'function' && typeof smoke.settleConfirm === 'function') {
+  try {
+    let settled = null
+    const pending = smoke.askConfirm({ title: '删除知识库', text: '删除后不可恢复，确认继续？', confirmText: '删除', danger: true }).then((ok) => { settled = ok })
+    const text = String(renderNode({ type: smoke.ConfirmHost, props: {}, children: [] }))
+    console.log('RENDER OK   ' + 'ConfirmHost'.padEnd(14) + ' chars=' + text.length + ' text=' + JSON.stringify(text.slice(0, 140)))
+    for (const probe of ['删除知识库', '删除后不可恢复', '取消', '删除', 'Esc 取消 · Enter 确认']) {
+      if (!text.includes(probe)) throw new Error('confirm text missing: ' + probe)
+    }
+    smoke.settleConfirm(false)
+    pending.then(() => {
+      try {
+        if (settled !== false) throw new Error('confirm should resolve false after cancel')
+        console.log('CONFIRM OK')
+      } catch (error) {
+        failures += 1
+        console.log('CONFIRM FAIL: ' + (error && error.message ? error.message : error))
+      }
+    })
+  } catch (error) {
+    failures += 1
+    console.log('CONFIRM FAIL: ' + (error && error.message ? error.message : error))
+  }
+}
 if (smoke.Page) renderComponent(smoke.Page, {}, 'Page')
 if (typeof smoke.diffUnifiedRows === 'function' && typeof smoke.diffSplitRows === 'function') {
   try {
@@ -201,5 +254,9 @@ if (typeof smoke.diffUnifiedRows === 'function' && typeof smoke.diffSplitRows ==
     console.log('DIFF FAIL: ' + (error && error.message ? error.message : error))
   }
 }
-console.log(failures === 0 ? 'SMOKE PASS' : 'SMOKE FAILURES: ' + failures)
-process.exit(failures === 0 ? 0 : 1)
+// 等确认框的 Promise 微任务跑完再收尾，否则 CONFIRM 断言的结果来不及计入 failures。
+// 不用 process.exit：管道下的 stdout 是异步写入，立刻退出会截断最后几行（CONFIRM OK 曾因此丢失）。
+setTimeout(() => {
+  console.log(failures === 0 ? 'SMOKE PASS' : 'SMOKE FAILURES: ' + failures)
+  process.exitCode = failures === 0 ? 0 : 1
+}, 20)
