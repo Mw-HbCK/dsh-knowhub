@@ -32,7 +32,10 @@ function report() {
   }
 }
 
-const tsc = path.join(root, '.toolchain', 'node_modules', 'typescript', 'bin', 'tsc')
+const tsc = [
+  path.join(root, '.toolchain', 'node_modules', 'typescript', 'bin', 'tsc'),
+  path.join(root, 'node_modules', 'typescript', 'bin', 'tsc'),
+].find((item) => existsSync(item)) ?? path.join(root, '.toolchain', 'node_modules', 'typescript', 'bin', 'tsc')
 const tests = [
   ['冒烟测试 smoke', 'tests/smoke.test.mjs'],
   ['M1 知识库与文档', 'tests/m1.test.mjs'],

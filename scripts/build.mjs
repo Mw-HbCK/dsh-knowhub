@@ -12,10 +12,15 @@ import { dirname, join } from 'node:path'
 import { rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const tscBin = join(root, '.toolchain', 'node_modules', 'typescript', 'bin', 'tsc')
+// 依次找项目内 .toolchain（历史布局）与常规 node_modules（CI/贡献者用 npm install 安装）。
+const tscCandidates = [
+  join(root, '.toolchain', 'node_modules', 'typescript', 'bin', 'tsc'),
+  join(root, 'node_modules', 'typescript', 'bin', 'tsc'),
+]
+const tscBin = tscCandidates.find((item) => existsSync(item))
 
-if (!existsSync(tscBin)) {
-  console.error('[knowhub] 缺少 TypeScript：请在 .toolchain 执行 npm install --save typescript @types/node')
+if (!tscBin) {
+  console.error('[knowhub] 缺少 TypeScript：请执行 npm install 安装 devDependencies')
   process.exit(1)
 }
 
