@@ -2,6 +2,10 @@
 
 > DSH 的全局知识中心与项目长期记忆。把项目知识与长期记忆沉淀成可检索、可审核、可追溯、可备份的知识库，并在 DSH 会话中按工作区作用域自动注入或按需检索。
 
+## 界面预览
+
+![知枢知识中心：Repo Wiki 列表与阅读器](https://raw.githubusercontent.com/Mw-HbCK/dsh-knowhub/main/assets/knowhub-panel.png)
+
 ## 功能特性
 
 **知识库与作用域**
@@ -76,7 +80,7 @@ dsh --profile knowhub --port 29961 --no-open
 
 ```powershell
 # tarball
-& dsh plugin --profile knowhub add .\dsh-knowhub-0.8.2.tgz
+& dsh plugin --profile knowhub add .\dsh-knowhub-0.8.3.tgz
 
 # 开发期：软链到源码目录，构建后重启即生效
 cmd /c mklink /J "$env:USERPROFILE\.dsh\profiles\knowhub\node_modules\dsh-knowhub" "C:\path\to\KnowHub"
