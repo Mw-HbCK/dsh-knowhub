@@ -119,6 +119,7 @@ await testCase('ReviewView 排序：切换为最早提交 → 请求带 order=ol
     return {}
   })
   await mount(smoke.ReviewView, { knowledgeBases: [{ id: 'kb1', name: '演示知识库' }] })
+  checkText('审核队列覆盖本地全部知识库', '队列范围提示应覆盖全部知识库')
   const sortSelect = selectByValue('newest')
   await choose(sortSelect, 'oldest')
   const urls = calls.filter((item) => item.url.includes('/review?')).map((item) => item.url)

@@ -1,8 +1,10 @@
 /**
  * M3 审核 HTTP 接口（前缀 /knowhub/api）。
  *
- * 作用域：与 /search 一致，只允许当前工作区可见（user:* + ws:<当前 workspaceId>）的知识库；
- * 客户端传参不能扩大范围，任何 kbId / docId 都在服务层重新校验。
+ * 作用域：审核是「人」对本地知识库的管理动作，因此队列、详情、差异、冲突与批量覆盖
+ * 所有未删除的知识库（用户级 + 各工作区），不按当前工作区过滤——桌面版宿主进程的 cwd 是
+ * 应用目录，反查不到工作区，按工作区过滤会让其它工作区的草稿/候选完全不可见。
+ * 检索与上下文注入仍按工作区隔离（scope.ts / search.ts），不受本文件影响。
  */
 import { errorMessage, readBody, writeError, writeOk } from '../http.js'
 import { all, openDatabase } from '../db/db.js'
@@ -21,11 +23,16 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function assertKb(db: any, id: string, scopeKeys: string[]): any {
+/** 审核覆盖本地全部知识库，这里只校验存在性（没有工作区范围限制）。 */
+function assertKb(db: any, id: string): any {
   const kb = getKnowledgeBase(db, id)
   if (!kb) throw new ReviewError('KB_NOT_FOUND', 404, '知识库不存在：' + id)
-  if (!scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '该知识库不在当前工作区的授权作用域内：' + id)
   return kb
+}
+
+/** 本地全部未删除知识库的 id：审核队列与日志的统计范围。 */
+function allKbIds(db: any): string[] {
+  return all(db, 'SELECT id FROM knowledge_bases WHERE deleted_at IS NULL').map((row: any) => String(row.id))
 }
 
 /** 组装「当前已批准内容 → 提议内容」的行级差异，供面板对比页直接渲染。 */
@@ -95,11 +102,11 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
     if (method === 'GET' && path === '/review') {
       const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
-      const kbIds = all(handle, 'SELECT id FROM knowledge_bases WHERE deleted_at IS NULL AND scope_key IN (' + scope.scopeKeys.map(() => '?').join(', ') + ')', scope.scopeKeys).map((row: any) => String(row.id))
+      const kbIds = allKbIds(handle)
       const kbId = str(url.searchParams.get('kbId'))
       let target = kbIds
       if (kbId !== '') {
-        if (!kbIds.includes(kbId)) throw new ReviewError('KB_FORBIDDEN', 403, '该知识库不在当前工作区的授权作用域内：' + kbId)
+        if (!kbIds.includes(kbId)) throw new ReviewError('KB_NOT_FOUND', 404, '知识库不存在：' + kbId)
         target = [kbId]
       }
       const queue = reviewQueue(handle, target, {
@@ -115,22 +122,20 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
     }
 
     if (method === 'GET' && path === '/review/log') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
-      const kbIds = all(handle, 'SELECT id FROM knowledge_bases WHERE deleted_at IS NULL AND scope_key IN (' + scope.scopeKeys.map(() => '?').join(', ') + ')', scope.scopeKeys).map((row: any) => String(row.id))
+      const kbIds = allKbIds(handle)
       writeOk(res, { entries: listReviewLog(handle, { kbIds, limit: Number(url.searchParams.get('limit') ?? 50) || 50 }) })
       return true
     }
 
     const proposalDetail = /^\/review\/proposals\/([^/]+)$/.exec(path)
     if (proposalDetail && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const id = decodeURIComponent(proposalDetail[1] ?? '')
       const proposal = getProposal(handle, id)
       if (!proposal) throw new ReviewError('PROPOSAL_NOT_FOUND', 404, '候选不存在：' + id)
       const kb = getKnowledgeBase(handle, proposal.kbId)
-      if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '该候选所属知识库不在当前工作区的授权作用域内')
+      if (!kb) throw new ReviewError('KB_NOT_FOUND', 404, '候选所属知识库不存在：' + proposal.kbId)
       const doc = proposal.docId ? getDocument(handle, proposal.docId) : null
       const currentDiff = doc ? diffVersions(handle, doc, null, null) : null
       writeOk(res, { proposal, document: doc, currentDiff })
@@ -139,13 +144,12 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const proposalDiff = /^\/review\/proposals\/([^/]+)\/diff$/.exec(path)
     if (proposalDiff && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const id = decodeURIComponent(proposalDiff[1] ?? '')
       const proposal = getProposal(handle, id)
       if (!proposal) throw new ReviewError('PROPOSAL_NOT_FOUND', 404, '候选不存在：' + id)
       const kb = getKnowledgeBase(handle, proposal.kbId)
-      if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '该候选所属知识库不在当前工作区的授权作用域内')
+      if (!kb) throw new ReviewError('KB_NOT_FOUND', 404, '候选所属知识库不存在：' + proposal.kbId)
       const doc = proposal.docId ? getDocument(handle, proposal.docId) : null
       const payload = buildDiffPayload({
         baseTitle: doc ? doc.title : null,
@@ -167,14 +171,13 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const proposalAction = /^\/review\/proposals\/([^/]+)\/(approve|reject)$/.exec(path)
     if (proposalAction && method === 'POST') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const id = decodeURIComponent(proposalAction[1] ?? '')
       const action = proposalAction[2] ?? ''
       const existing = getProposal(handle, id)
       if (!existing) throw new ReviewError('PROPOSAL_NOT_FOUND', 404, '候选不存在：' + id)
       const kb = getKnowledgeBase(handle, existing.kbId)
-      if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '该候选所属知识库不在当前工作区的授权作用域内')
+      if (!kb) throw new ReviewError('KB_NOT_FOUND', 404, '候选所属知识库不存在：' + existing.kbId)
       const body = (await readBody(req)) ?? {}
       if (action === 'reject') {
         const proposal = rejectProposal(handle, id, { actor: resolveActor(handle, body.actor), note: str(body.note) || null })
@@ -192,7 +195,6 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
     }
 
     if (method === 'POST' && path === '/review/bulk') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const body = (await readBody(req)) ?? {}
       const rawItems = Array.isArray(body.items) ? body.items : []
@@ -203,19 +205,14 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
         const type = str(raw?.type)
         const id = str(raw?.id)
         if ((type !== 'proposal' && type !== 'doc') || id === '') throw new ReviewError('BULK_INVALID_ITEM', 400, '批量项必须是 {type:"proposal"|"doc", id}')
-        // 不存在的 id 不在这里 404：交给 bulkReview 逐条记录失败，避免一条脏 id 让整批失败
+        // 不存在的 id 不在这里 404：交给 bulkReview 逐条记录失败，避免一条脏 id 让整批失败。
+        // 审核覆盖全部知识库，这里只做「对象存在但所属知识库已不存在」的一致性校验。
         if (type === 'proposal') {
           const proposal = getProposal(handle, id)
-          if (proposal) {
-            const kb = getKnowledgeBase(handle, proposal.kbId)
-            if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '候选所属知识库不在授权作用域内：' + id)
-          }
+          if (proposal && !getKnowledgeBase(handle, proposal.kbId)) throw new ReviewError('KB_NOT_FOUND', 404, '候选所属知识库不存在：' + id)
         } else {
           const doc = getDocument(handle, id)
-          if (doc) {
-            const kb = getKnowledgeBase(handle, doc.kbId)
-            if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '知识所属知识库不在授权作用域内：' + id)
-          }
+          if (doc && !getKnowledgeBase(handle, doc.kbId)) throw new ReviewError('KB_NOT_FOUND', 404, '知识所属知识库不存在：' + id)
         }
         items.push({ type, id })
       }
@@ -227,13 +224,12 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const conflictDiff = /^\/review\/conflicts\/([^/]+)\/diff$/.exec(path)
     if (conflictDiff && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const id = decodeURIComponent(conflictDiff[1] ?? '')
       const conflict = getConflict(handle, id)
       if (!conflict) throw new ReviewError('CONFLICT_NOT_FOUND', 404, '冲突不存在：' + id)
       const kb = getKnowledgeBase(handle, conflict.kbId)
-      if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '该冲突所属知识库不在当前工作区的授权作用域内')
+      if (!kb) throw new ReviewError('KB_NOT_FOUND', 404, '冲突所属知识库不存在：' + conflict.kbId)
       const doc = getDocument(handle, conflict.docId)
       const payload = buildDiffPayload({
         baseTitle: doc ? doc.title : conflict.proposedTitle,
@@ -257,13 +253,12 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
     // 基线取上一版正文（只有一版时整体视为新增），目标取知识当前正文。
     const documentDiff = /^\/review\/documents\/([^/]+)\/diff$/.exec(path)
     if (documentDiff && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const docId = decodeURIComponent(documentDiff[1] ?? '')
       const doc = getDocument(handle, docId)
       if (!doc) throw new ReviewError('DOC_NOT_FOUND', 404, '知识不存在：' + docId)
       const kb = getKnowledgeBase(handle, doc.kbId)
-      if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '该知识所属知识库不在当前工作区的授权作用域内')
+      if (!kb) throw new ReviewError('KB_NOT_FOUND', 404, '知识所属知识库不存在：' + doc.kbId)
       const previous = doc.currentVersion > 1 ? getVersionContent(handle, doc.id, doc.currentVersion - 1) : null
       const payload = buildDiffPayload({
         baseTitle: previous ? doc.title : null,
@@ -284,13 +279,12 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const conflictAction = /^\/review\/conflicts\/([^/]+)\/resolve$/.exec(path)
     if (conflictAction && method === 'POST') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const id = decodeURIComponent(conflictAction[1] ?? '')
       const conflict = getConflict(handle, id)
       if (!conflict) throw new ReviewError('CONFLICT_NOT_FOUND', 404, '冲突不存在：' + id)
       const kb = getKnowledgeBase(handle, conflict.kbId)
-      if (!kb || !scope.scopeKeys.includes(kb.scopeKey)) throw new ReviewError('KB_FORBIDDEN', 403, '该冲突所属知识库不在当前工作区的授权作用域内')
+      if (!kb) throw new ReviewError('KB_NOT_FOUND', 404, '冲突所属知识库不存在：' + conflict.kbId)
       const body = (await readBody(req)) ?? {}
       const mode = str(body.mode)
       const result = await resolveConflict(handle, storageRoot(), id, {
@@ -307,20 +301,18 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const kbReview = /^\/kb\/([^/]+)\/review$/.exec(path)
     if (kbReview && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(kbReview[1] ?? '')
-      assertKb(handle, kbId, scope.scopeKeys)
+      assertKb(handle, kbId)
       writeOk(res, reviewQueue(handle, [kbId], Number(url.searchParams.get('limit') ?? 50) || 50))
       return true
     }
 
     const kbProposals = /^\/kb\/([^/]+)\/proposals$/.exec(path)
     if (kbProposals && method === 'POST') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(kbProposals[1] ?? '')
-      const kb = assertKb(handle, kbId, scope.scopeKeys)
+      const kb = assertKb(handle, kbId)
       const body = (await readBody(req)) ?? {}
       const proposal = createProposal(handle, kb, { ...body, source: str(body.source) || 'web', createdBy: str(body.createdBy) || resolveActor(handle, null) })
       const auto = await autoApproveIfEligible(handle, storageRoot(), proposal, autoApproveRules(handle))
@@ -335,10 +327,9 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const versions = /^\/kb\/([^/]+)\/docs\/([^/]+)\/versions$/.exec(path)
     if (versions && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(versions[1] ?? '')
-      assertKb(handle, kbId, scope.scopeKeys)
+      assertKb(handle, kbId)
       const doc = assertDoc(handle, kbId, decodeURIComponent(versions[2] ?? ''))
       writeOk(res, { documentId: doc.id, currentVersion: doc.currentVersion, versions: listVersions(handle, doc.id) })
       return true
@@ -346,10 +337,9 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const versionContent = /^\/kb\/([^/]+)\/docs\/([^/]+)\/versions\/(\d+)$/.exec(path)
     if (versionContent && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(versionContent[1] ?? '')
-      assertKb(handle, kbId, scope.scopeKeys)
+      assertKb(handle, kbId)
       const doc = assertDoc(handle, kbId, decodeURIComponent(versionContent[2] ?? ''))
       const entry = getVersionContent(handle, doc.id, Number(versionContent[3]))
       if (!entry) throw new ReviewError('VERSION_NOT_FOUND', 404, '历史版本不存在：第 ' + versionContent[3] + ' 版')
@@ -359,10 +349,9 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const diff = /^\/kb\/([^/]+)\/docs\/([^/]+)\/diff$/.exec(path)
     if (diff && method === 'GET') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(diff[1] ?? '')
-      assertKb(handle, kbId, scope.scopeKeys)
+      assertKb(handle, kbId)
       const doc = assertDoc(handle, kbId, decodeURIComponent(diff[2] ?? ''))
       const from = Number(url.searchParams.get('from') ?? '') || null
       const to = Number(url.searchParams.get('to') ?? '') || null
@@ -372,10 +361,9 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const docReview = /^\/kb\/([^/]+)\/docs\/([^/]+)\/review$/.exec(path)
     if (docReview && method === 'POST') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(docReview[1] ?? '')
-      assertKb(handle, kbId, scope.scopeKeys)
+      assertKb(handle, kbId)
       const doc = assertDoc(handle, kbId, decodeURIComponent(docReview[2] ?? ''))
       const body = (await readBody(req)) ?? {}
       const action = str(body.action)
@@ -394,10 +382,9 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const docRestore = /^\/kb\/([^/]+)\/docs\/([^/]+)\/restore$/.exec(path)
     if (docRestore && method === 'POST') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(docRestore[1] ?? '')
-      assertKb(handle, kbId, scope.scopeKeys)
+      assertKb(handle, kbId)
       const doc = assertDoc(handle, kbId, decodeURIComponent(docRestore[2] ?? ''))
       const body = (await readBody(req)) ?? {}
       const version = Number(body.version)
@@ -410,10 +397,9 @@ export async function handleReviewRequest(request: ReviewRequest): Promise<boole
 
     const docEdit = /^\/kb\/([^/]+)\/docs\/([^/]+)$/.exec(path)
     if (docEdit && method === 'PATCH') {
-      const scope = await resolveScope(ctx, process.cwd())
       const handle = db()
       const kbId = decodeURIComponent(docEdit[1] ?? '')
-      assertKb(handle, kbId, scope.scopeKeys)
+      assertKb(handle, kbId)
       const doc = assertDoc(handle, kbId, decodeURIComponent(docEdit[2] ?? ''))
       const body = (await readBody(req)) ?? {}
       const updated = await updateDocumentByHuman(handle, storageRoot(), doc, body, resolveActor(handle, body.actor))

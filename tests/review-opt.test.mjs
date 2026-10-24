@@ -306,10 +306,16 @@ await test('HTTP：GET /review 返回真实计数、分页与筛选回显', asyn
   assert.ok(response.body.value.pendingTotal >= response.body.value.counts.total)
 })
 
-await test('HTTP：越权 kbId 返回 403，非法分页参数被夹紧', async () => {
-  const forbidden = await call('GET', '/review?kbId=' + kbOther.id)
-  assert.equal(forbidden.status, 403)
-  assert.equal(forbidden.body.error.code, 'KB_FORBIDDEN')
+await test('HTTP：审核队列覆盖本地全部知识库，kbId 只用于缩小范围', async () => {
+  const globalQueue = await call('GET', '/review?limit=100&page=1')
+  assert.equal(globalQueue.status, 200)
+  // 另一个工作区的知识库同样在队列范围内（修复前这里返回 403 且队列为空）
+  const scoped = await call('GET', '/review?kbId=' + kbOther.id)
+  assert.equal(scoped.status, 200)
+  assert.ok(scoped.body.value.counts.total <= globalQueue.body.value.counts.total)
+  const unknown = await call('GET', '/review?kbId=kb_missing')
+  assert.equal(unknown.status, 404)
+  assert.equal(unknown.body.error.code, 'KB_NOT_FOUND')
   const clamped = await call('GET', '/review?limit=999&page=0')
   assert.equal(clamped.status, 200)
   assert.ok(clamped.body.value.pagination.limit <= 100)
@@ -388,17 +394,30 @@ await test('HTTP：GET /review/conflicts/:id/diff 返回当前正文与冲突提
   assert.ok(value.diff.lines.length >= 1)
 })
 
-await test('HTTP：diff 端点对不存在与越权对象返回 404 / 403', async () => {
+await test('HTTP：diff 端点对不存在对象返回 404，跨工作区对象可直接对比', async () => {
   const missing = await call('GET', '/review/proposals/prop_missing/diff')
   assert.equal(missing.status, 404)
   assert.equal(missing.body.error.code, 'PROPOSAL_NOT_FOUND')
   const missingConflict = await call('GET', '/review/conflicts/conf_missing/diff')
   assert.equal(missingConflict.status, 404)
   assert.equal(missingConflict.body.error.code, 'CONFLICT_NOT_FOUND')
-  const foreign = review.createProposal(db, kbOther, { kind: 'create', title: '越权候选', body: '越权正文' })
-  const forbidden = await call('GET', '/review/proposals/' + encodeURIComponent(foreign.id) + '/diff')
-  assert.equal(forbidden.status, 403)
-  assert.equal(forbidden.body.error.code, 'KB_FORBIDDEN')
+  const foreign = review.createProposal(db, kbOther, { kind: 'create', title: '跨工作区候选', body: '跨工作区正文' })
+  const accessible = await call('GET', '/review/proposals/' + encodeURIComponent(foreign.id) + '/diff')
+  assert.equal(accessible.status, 200)
+  assert.equal(accessible.body.value.kb.id, kbOther.id)
+  assert.equal(accessible.body.value.proposal.id, foreign.id)
+})
+
+await test('HTTP：跨工作区草稿在全局队列可见并可直接批准（桌面版 cwd 反查不到工作区）', async () => {
+  const kbForeign = await store.createKnowledgeBase(db, { name: '桌面版跨工作区库', scope: 'workspace', workspaceId: 'ws-desktop-uuid', modelProvider: 'amd', modelId: 'DeepSeek-V4-Flash', modelStrategy: 'economy' }, { storageRoot, workspacePath: join(testRoot, 'ws-desktop'), workspaceTitle: '桌面' })
+  const draft = await search.createDocument(db, storageRoot, kbForeign, { title: '跨工作区草稿', kind: 'wiki', body: '# 跨工作区草稿\n\n草稿正文\n', status: 'draft' })
+  const queue = await call('GET', '/review?limit=100&page=1')
+  assert.equal(queue.status, 200)
+  assert.ok(queue.body.value.drafts.some((item) => item.id === draft.id), '跨工作区草稿应出现在待审核队列')
+  assert.ok(queue.body.value.counts.drafts >= 1)
+  const approve = await call('POST', '/kb/' + kbForeign.id + '/docs/' + draft.id + '/review', { action: 'approve', actor: '跨区审核员' })
+  assert.equal(approve.status, 200)
+  assert.equal(approve.body.value.document.status, 'approved')
 })
 
 console.log('')

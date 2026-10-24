@@ -408,10 +408,12 @@ await test('HTTP：待审核知识对比以上一版为基线，单版知识全�
   assert.equal(missing.status, 404)
   assert.equal(missing.body.error.code, 'DOC_NOT_FOUND')
 
-  const foreign = await search.createDocument(db, storageRoot, kbOther, { title: 'HTTP 越权知识', kind: 'memory', body: '越权正文', status: 'approved' })
-  const forbidden = await reviewCall('/review/documents/' + foreign.id + '/diff')
-  assert.equal(forbidden.status, 403)
-  assert.equal(forbidden.body.error.code, 'KB_FORBIDDEN')
+  // 审核覆盖本地全部知识库：另一个工作区的知识也能直接对比（不再 403）
+  const foreign = await search.createDocument(db, storageRoot, kbOther, { title: 'HTTP 跨工作区知识', kind: 'memory', body: '跨工作区正文', status: 'approved' })
+  const accessible = await reviewCall('/review/documents/' + foreign.id + '/diff')
+  assert.equal(accessible.status, 200)
+  assert.equal(accessible.body.value.kb.id, kbOther.id)
+  assert.equal(accessible.body.value.document.id, foreign.id)
 })
 
 console.log('')

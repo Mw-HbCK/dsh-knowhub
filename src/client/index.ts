@@ -2490,6 +2490,7 @@ function ReviewView(props: any): any {
       h('button', { type: 'button', style: styles.button, className: 'kh-hover', disabled: loading, onClick: () => void load() }, loading ? '刷新中…' : '刷新'),
       h('button', { type: 'button', style: styles.button, className: 'kh-hover', disabled: busy !== null, onClick: () => void openLog() }, '审核日志'),
     ),
+    h('div', { style: { ...styles.hint, marginTop: '8px' } }, '审核队列覆盖本地全部知识库（用户级 + 各工作区），不按当前工作区过滤；检索与上下文注入仍按工作区隔离。'),
     h('div', { style: { ...styles.row, alignItems: 'center', marginTop: '8px' } },
       h('span', { style: styles.badgeAmber }, '待审核合计 ' + pendingTotal + ' 项'),
       h('span', { style: styles.hint }, filterHint + ' · 第 ' + page + ' / ' + maxPages + ' 页（每页最多 ' + LIMIT + ' 条）'),
