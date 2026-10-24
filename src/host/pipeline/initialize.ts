@@ -17,6 +17,7 @@ import { contentHash, type KbRow } from '../kb/store.js'
 import { createDocument, getDocument, slugify } from '../search.js'
 import { recordConflict } from '../review.js'
 import { readModelCatalog, runModelCall } from '../model.js'
+import { MAX_OUTPUT_ATTEMPTS, parseModelJson, retryTokenBudget } from './model-output.js'
 import { listWorkspaces } from '../workspace.js'
 import { indexProject, saveProjectIndex, type ProjectIndex } from './index.js'
 import { createTask, runTask, type TaskRow } from '../tasks.js'
@@ -139,20 +140,6 @@ function buildPrompt(topics: string[], context: string): string {
   ].join('\n')
 }
 
-function extractJson(text: string): any {
-  let cleaned = text.trim()
-  const fence = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  if (fence && fence[1]) cleaned = fence[1].trim()
-  const first = cleaned.indexOf('{')
-  const last = cleaned.lastIndexOf('}')
-  if (first < 0 || last <= first) throw new InitError('MODEL_OUTPUT_INVALID', '模型输出中没有 JSON 对象')
-  try {
-    return JSON.parse(cleaned.slice(first, last + 1))
-  } catch (error) {
-    throw new InitError('MODEL_OUTPUT_INVALID', '模型输出的 JSON 解析失败：' + errorMessage(error))
-  }
-}
-
 interface CandidateDoc {
   title: string
   kind: string
@@ -264,6 +251,7 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
     const callSummaries: any[] = []
 
     const secrets = { root, storageRoot }
+    currentStage = '生成 Wiki 候选'
     for (let position = 0; position < calls.length; position += 1) {
       const planned = calls[position]
       if (!planned) continue
@@ -272,25 +260,50 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
       progress(percent, '调用模型生成：' + planned.topics.join('、'))
       const prompt = buildPrompt(planned.topics, context)
       log('info', '调用模型（' + planned.purpose + '，主题：' + planned.topics.join('、') + '，提示长度 ' + prompt.length + ' 字符）')
-      const result = await runModelCall(ctx, {
-        provider: kb.modelProvider,
-        model: kb.modelId,
-        system: '你是严谨的代码仓库文档分析器，只依据给定事实输出严格 JSON。',
-        prompt,
-        maxTokens: limits.maxTokens,
-        temperature: 0.2,
-        timeoutMs: 150000,
-        signal,
-      })
-      recordLlmCall(db, kb, taskId, planned.purpose, result)
-      callSummaries.push({ purpose: planned.purpose, provider: result.provider, model: result.model, ok: result.ok, finishKind: result.finishKind, failure: result.failure, elapsedMs: result.elapsedMs, usage: result.usage })
-      if (result.aborted || signal.aborted) throw new InitError('TASK_CANCELLED', '任务已取消（模型调用被中断）')
-      if (!result.ok) {
-        const failureCode = result.failure?.code ?? 'MODEL_CALL_FAILED'
-        throw new InitError('MODEL_CALL_FAILED', '模型调用失败（' + kb.modelProvider + ' / ' + kb.modelId + '，' + failureCode + '）：' + (result.failure?.message ?? '未知错误'))
+      // 推理模型可能把 token 预算耗在思考上导致输出被截断：识别出来并加倍预算重试一次。
+      let budget: number = limits.maxTokens
+      let parsed: any = null
+      for (let attempt = 1; ; attempt += 1) {
+        ensureNotAborted(signal)
+        const result = await runModelCall(ctx, {
+          provider: kb.modelProvider,
+          model: kb.modelId,
+          system: '你是严谨的代码仓库文档分析器，只依据给定事实输出严格 JSON。',
+          prompt,
+          maxTokens: budget,
+          temperature: 0.2,
+          timeoutMs: 150000,
+          signal,
+        })
+        recordLlmCall(db, kb, taskId, planned.purpose, result)
+        callSummaries.push({ purpose: planned.purpose, provider: result.provider, model: result.model, ok: result.ok, finishKind: result.finishKind, failure: result.failure, elapsedMs: result.elapsedMs, usage: result.usage, attempt, maxTokens: budget })
+        if (result.aborted || signal.aborted) throw new InitError('TASK_CANCELLED', '任务已取消（模型调用被中断）')
+        if (!result.ok) {
+          const failureCode = result.failure?.code ?? 'MODEL_CALL_FAILED'
+          throw new InitError('MODEL_CALL_FAILED', '模型调用失败（' + kb.modelProvider + ' / ' + kb.modelId + '，' + failureCode + '）：' + (result.failure?.message ?? '未知错误'))
+        }
+        log('info', '模型返回 ' + result.text.length + ' 字符（finish=' + String(result.finishKind) + '，预算 ' + budget + ' tokens，耗时 ' + result.elapsedMs + 'ms）')
+        const output = parseModelJson(result.text, { finishKind: result.finishKind, maxTokens: budget, attempt, reasoningChars: result.reasoningChars })
+        const truncated = result.finishKind === 'max-tokens'
+        if (output.ok) {
+          const docCount = Array.isArray(output.value?.documents) ? output.value.documents.length : 0
+          if (docCount === 0 && truncated && attempt < MAX_OUTPUT_ATTEMPTS) {
+            const nextBudget = retryTokenBudget(budget)
+            log('warn', '模型在 ' + budget + ' tokens 预算内没有写出任何文档（finish=max-tokens，思考 ' + String(result.reasoningChars ?? 0) + ' 字符），改用 ' + nextBudget + ' tokens 重试一次')
+            budget = nextBudget
+            continue
+          }
+          parsed = output.value
+          break
+        }
+        if (output.truncated && attempt < MAX_OUTPUT_ATTEMPTS) {
+          const nextBudget = retryTokenBudget(budget)
+          log('warn', '模型输出被截断（' + budget + ' tokens 上限），改用 ' + nextBudget + ' tokens 重试一次：' + planned.purpose)
+          budget = nextBudget
+          continue
+        }
+        throw new InitError(output.code, output.message)
       }
-      log('info', '模型返回 ' + result.text.length + ' 字符（finish=' + String(result.finishKind) + '，耗时 ' + result.elapsedMs + 'ms）')
-      const parsed = extractJson(result.text)
       const validated = validateDocuments(parsed, knownPaths, secrets)
       rejected.push(...validated.rejected)
       documentsSeen += validated.documents.length

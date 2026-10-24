@@ -17,6 +17,7 @@ import { getDocument, listDocuments, type DocRow } from '../search.js'
 import { appendVersion, diffLines } from '../docvers.js'
 import { autoApproveIfEligible, createProposal } from '../review.js'
 import { runModelCall } from '../model.js'
+import { MAX_OUTPUT_ATTEMPTS, retryTokenBudget } from './model-output.js'
 import { readSettings } from '../settings.js'
 import { listWorkspaces } from '../workspace.js'
 import { indexProject, saveProjectIndex, type ProjectIndex } from './index.js'
@@ -457,32 +458,52 @@ export async function runIncremental(input: IncrementalInput): Promise<any> {
 
     const snippets = await collectSnippets(analysis.root, deltaChanges.filter((change) => change.change !== 'deleted').map((change) => change.path), analysis.limits)
     const prompt = buildUpdatePrompt({ doc, changes: deltaChanges, snippets, scan: analysis.scan, mode: analysis.mode })
-    let result
-    try {
-      result = await runModelCall(input.ctx, {
-        provider: kb.modelProvider ?? '',
-        model: kb.modelId ?? '',
-        system: UPDATE_SYSTEM,
-        prompt,
-        maxTokens: analysis.limits.maxTokens,
-        temperature: 0.2,
-        timeoutMs: 120000,
-        signal,
-      })
-    } catch (error) {
-      summary.failures.push(doc.title + ' → ' + errorMessage(error))
-      log('error', '文档「' + doc.title + '」模型调用异常：' + errorMessage(error) + '，已保留原文档')
+    // 推理模型可能把 token 预算耗在思考上导致输出被截断：识别出来并加倍预算重试一次。
+    let budget: number = analysis.limits.maxTokens
+    let parsed: ReturnType<typeof parseUpdatePayload> = null
+    let failureText: string | null = null
+    for (let attempt = 1; ; attempt += 1) {
+      if (signal.aborted) throw new IncrementalError('TASK_CANCELLED', '任务已取消')
+      let result: Awaited<ReturnType<typeof runModelCall>>
+      try {
+        result = await runModelCall(input.ctx, {
+          provider: kb.modelProvider ?? '',
+          model: kb.modelId ?? '',
+          system: UPDATE_SYSTEM,
+          prompt,
+          maxTokens: budget,
+          temperature: 0.2,
+          timeoutMs: 120000,
+          signal,
+        })
+      } catch (error) {
+        failureText = errorMessage(error)
+        break
+      }
+      recordLlmCall(db, kb, taskId, 'wiki-update:' + doc.slug, result)
+      summary.modelCalls += 1
+      if (!result.ok) {
+        failureText = result.failure ? String(result.failure.code) + '：' + String(result.failure.message) : '模型未返回内容'
+        break
+      }
+      parsed = parseUpdatePayload(result.text, secrets)
+      if (parsed !== null) break
+      if (result.finishKind === 'max-tokens' && attempt < MAX_OUTPUT_ATTEMPTS) {
+        const nextBudget = retryTokenBudget(budget)
+        log('warn', '文档「' + doc.title + '」的模型输出被截断（' + budget + ' tokens 上限），改用 ' + nextBudget + ' tokens 重试一次')
+        budget = nextBudget
+        continue
+      }
+      failureText = result.finishKind === 'max-tokens'
+        ? '模型输出被截断（' + budget + ' tokens 上限，finish=max-tokens，思考过程 ' + String(result.reasoningChars ?? 0) + ' 字符），未产出完整 JSON；建议换用非推理模型或把策略调高'
+        : '模型输出结构不合法'
+      break
+    }
+    if (failureText !== null) {
+      summary.failures.push(doc.title + ' → ' + failureText)
+      log('error', '文档「' + doc.title + '」增量分析失败（' + failureText + '），已保留原文档')
       continue
     }
-    recordLlmCall(db, kb, taskId, 'wiki-update:' + doc.slug, result)
-    summary.modelCalls += 1
-    if (!result.ok) {
-      const failure = result.failure ? String(result.failure.code) + '：' + String(result.failure.message) : '模型未返回内容'
-      summary.failures.push(doc.title + ' → ' + failure)
-      log('error', '文档「' + doc.title + '」增量分析失败（' + failure + '），已保留原文档')
-      continue
-    }
-    const parsed = parseUpdatePayload(result.text, secrets)
     if (parsed === null) {
       summary.failures.push(doc.title + ' → 模型输出结构不合法')
       log('warn', '文档「' + doc.title + '」的模型输出未通过结构校验，已保留原文档')

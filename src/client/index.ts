@@ -811,7 +811,29 @@ function EditKbForm(props: any): any {
   const [strategy, setStrategy] = R.useState(kb.modelStrategy ?? 'balanced')
   const [busy, setBusy] = R.useState(false)
   const [error, setError] = R.useState(null)
+  const [probing, setProbing] = R.useState(false)
+  const [probeResult, setProbeResult] = R.useState(null)
   const nameLength = [...name].length
+
+  // 直接向宿主发一次最小模型调用，确认这个模型当前真的能调通（不写任何知识）。
+  const testModel = async () => {
+    if (modelKey === '') { setError('请先选择知识处理模型'); return }
+    const parts = modelKey.split('|')
+    setProbing(true); setProbeResult(null); setError(null)
+    try {
+      const probe = await request('/probe', { method: 'POST', body: { provider: parts[0], model: parts[1], prompt: 'ping' } })
+      if (probe && probe.ok === false) {
+        const reason = probe.failure ? String(probe.failure.code ?? '') + '：' + String(probe.failure.message ?? '') : '模型不可用'
+        setProbeResult({ ok: false, text: reason })
+      } else {
+        setProbeResult({ ok: true, text: '模型可用（' + Number(probe?.elapsedMs ?? 0) + ' ms，返回 ' + JSON.stringify(String(probe?.text ?? '')).slice(1, 41) + '）' })
+      }
+    } catch (failure: any) {
+      setProbeResult({ ok: false, text: message(failure) })
+    } finally {
+      setProbing(false)
+    }
+  }
 
   const submit = async () => {
     const trimmed = name.trim()
@@ -874,11 +896,31 @@ function EditKbForm(props: any): any {
         h('label', { style: styles.dialogLabel }, '知识处理模型', h('span', { style: styles.labelRequired }, '＊')),
         (models ?? []).length === 0
           ? h('div', { style: styles.hint }, '当前 DSH 没有已配置模型。请先在 DSH 设置中配置模型，知枢不会要求重新填写 API Key。')
-          : h('select', { style: styles.dialogInput, value: modelKey, onChange: (event: any) => setModelKey(event.target.value) },
+          : h('select', {
+            style: styles.dialogInput, value: modelKey,
+            onChange: (event: any) => { setModelKey(event.target.value); setProbeResult(null) },
+          },
             h('option', { value: '' }, '请选择模型…'),
             (models ?? []).map((model: any) => h('option', { key: model.provider + '|' + model.id, value: model.provider + '|' + model.id }, model.name + '（' + model.id + '）· ' + model.provider)),
           ),
         h('div', { style: styles.hint }, '模型列表来自 DSH 当前真实配置（ctx.llm.listProviders/listModels）；只保存 provider 与 model 标识，不存密钥。'),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '8px', flexWrap: 'wrap' } },
+          h('button', {
+            type: 'button',
+            style: probing || modelKey === '' ? { ...styles.button, ...styles.buttonDisabled } : styles.button,
+            className: 'kh-hover',
+            disabled: probing || modelKey === '',
+            onClick: () => void testModel(),
+          }, probing ? '测试中…' : '测试模型'),
+          probeResult === null
+            ? h('span', { style: styles.hint }, '建议先点一次，确认该模型当前可调通（只发一句 ping，不写入任何知识）。')
+            : h('span', {
+              style: {
+                fontSize: '12px', lineHeight: '18px', wordBreak: 'break-all',
+                color: probeResult.ok ? 'var(--dsw-alias-state-success-label)' : 'var(--dsw-alias-state-error-label)',
+              },
+            }, (probeResult.ok ? '✓ ' : '✗ ') + String(probeResult.text)),
+        ),
       ),
       h('div', { style: styles.field },
         h('label', { style: styles.dialogLabel }, '模型使用策略', h('span', { style: styles.labelRequired }, '＊')),
@@ -1297,6 +1339,9 @@ function KbView(props: any): any {
             task.errorCode ? h('span', null, '错误码：' + task.errorCode) : null,
             task.errorDetail ? h('span', null, '错误：' + task.errorDetail) : null,
           ),
+          task.status === 'failed'
+            ? h('div', { style: { ...styles.hint, marginTop: '4px' } }, '提示：模型调用失败时，点右上角「编辑配置」→「测试模型」可直接确认该模型当前能否调通；若提示输出被截断，换一个非推理模型或把「模型使用策略」调高。')
+            : null,
           task.logs && task.logs.length > 0 ? h('pre', { style: styles.logs },
             task.logs.slice(-12).map((item: any) => '[' + new Date(item.at).toLocaleTimeString('zh-CN') + '] ' + item.level + ' ' + item.message).join('\n'),
           ) : null,
