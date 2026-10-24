@@ -64,5 +64,13 @@
     "knowledge-base",
     "wiki",
     "memory"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mw-HbCK/dsh-knowhub.git"
+  },
+  "homepage": "https://github.com/Mw-HbCK/dsh-knowhub#readme",
+  "bugs": {
+    "url": "https://github.com/Mw-HbCK/dsh-knowhub/issues"
+  }
 }
