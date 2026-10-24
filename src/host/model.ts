@@ -75,7 +75,9 @@ export async function readModelCatalog(ctx: any): Promise<ModelCatalog> {
 async function makeUserMessage(text: string): Promise<any> {
   // 优先用官方构造器（会补齐 MessageId 等品牌字段），失败时回退为等价字面量。
   try {
-    const mod: any = await import('@deepseek-ai/dsh-llm')
+    // 变量说明符：该包是宿主侧可选依赖，未安装时不让类型检查失败（CI / 无 DSH 包的环境）。
+    const spec = '@deepseek-ai/dsh-llm'
+    const mod: any = await import(spec)
     if (typeof mod?.createUserMessage === 'function') {
       return mod.createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
     }
