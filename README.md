@@ -2,6 +2,8 @@
 
 > DSH 的全局知识中心与项目长期记忆。把项目知识与长期记忆沉淀成可检索、可审核、可追溯、可备份的知识库，并在 DSH 会话中按工作区作用域自动注入或按需检索。
 
+版本变化见 [CHANGELOG](CHANGELOG.md)；0.9 规划草案见 [ROADMAP-0.9-draft](ROADMAP-0.9-draft.md)。
+
 ## 界面预览
 
 ![知枢知识中心：Repo Wiki 列表与阅读器](https://raw.githubusercontent.com/Mw-HbCK/dsh-knowhub/main/assets/knowhub-panel.png)
