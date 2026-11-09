@@ -360,6 +360,47 @@ await testCase('知识库列表：固定展示全部知识库，不再按工作�
   checkText('用户级共享知识库', '用户级知识库也应出现')
   check(!text().includes('全部工作区（用户级 + 各工作区）'), '不应再出现工作区筛选下拉')
 })
+function pageHandler(versionResult) {
+  return (request) => {
+    if (request.url.includes('/version')) {
+      if (versionResult instanceof Error) throw versionResult
+      return versionResult
+    }
+    if (request.url.includes('/documents?')) return docListHandler(request)
+    if (request.url.includes('/current-workspace')) return { workspaceId: 'ws-1', workspacePath: 'C:/demo', workspaceTitle: '演示项目' }
+    if (request.url.includes('/workspaces')) return { workspaces: [] }
+    if (request.url.includes('/models')) return { models: [], available: true }
+    if (request.url.includes('/review?')) return { counts: { pendingTotal: 0, total: 0 } }
+    if (request.url.includes('/kb')) return { knowledgeBases: [kb] }
+    return {}
+  }
+}
+
+await testCase('版本横幅：运行版本与安装版本不一致 → 显示横幅（含两个版本号）且可关闭', async () => {
+  resetCalls(pageHandler({ running: '0.8.8', installed: '0.9.0', mismatch: true }))
+  await mount(smoke.Page, {})
+  check(calls.some((item) => item.url.includes('/version')), '面板启动时应请求 /version')
+  checkText('知枢版本不一致', '不一致时应显示横幅')
+  checkText('0.9.0', '横幅应含安装版本')
+  checkText('0.8.8', '横幅应含运行版本')
+  await click('关闭')
+  check(!text().includes('知枢版本不一致'), '点关闭后横幅应消失')
+})
+
+await testCase('版本横幅：版本一致 → 不显示横幅', async () => {
+  resetCalls(pageHandler({ running: '0.8.8', installed: '0.8.8', mismatch: false }))
+  await mount(smoke.Page, {})
+  checkText('知识中心', '面板应正常渲染')
+  check(!text().includes('知枢版本不一致'), '版本一致时不应出现横幅')
+})
+
+await testCase('版本横幅：/version 请求失败 → 静默无横幅且面板正常', async () => {
+  resetCalls(pageHandler(new Error('网络失败')))
+  await mount(smoke.Page, {})
+  checkText('知识中心', '面板应正常渲染')
+  check(!text().includes('知枢版本不一致'), '请求失败时不应出现横幅')
+})
+
 console.log('checks=' + checkCount())
 const failed = failureCount()
 console.log(failed === 0 ? 'INTERACTION PASS' : 'INTERACTION FAILURES: ' + failed)

@@ -11,6 +11,7 @@
  * ctx.inject([name], cb) 的形式——服务就绪时回调，缺失时插件照常加载。
  */
 import { createRouter } from './route.js'
+import { captureRunningVersion } from './diagnostics.js'
 import { registerKnowledgeTools } from './tool.js'
 import { registerContextInjection } from './inject.js'
 import { registerAutoDistill } from './distill.js'
@@ -28,7 +29,9 @@ export interface Config {
 
 export function apply(ctx: any, config: Config = {}): void {
   const cfg = config ?? {}
-  const router = createRouter(ctx, cfg)
+  // C-3：进程刚加载完本版代码，此刻把磁盘版本定格为「运行版本」，供 /version 与诊断对比。
+  const runningVersion = captureRunningVersion()
+  const router = createRouter(ctx, cfg, { runningVersion })
 
   // HTTP 路由：webServer 就绪时才注册；没有该服务（桌面版）时静默跳过，工具能力不受影响。
   ctx.inject(['webServer'], (webCtx: any) => {

@@ -106,6 +106,12 @@ const styles: Record<string, any> = {
     background: 'var(--dsw-specific-sidebar-fill)', border: '1px solid var(--dsw-alias-border-l3)',
     color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', whiteSpace: 'pre-wrap', lineHeight: '19px',
   },
+  warn: {
+    margin: '0 0 14px', padding: '10px 12px', borderRadius: '10px',
+    background: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 35%, transparent)',
+    color: 'var(--dsw-alias-state-warn-label)', fontSize: '12px', whiteSpace: 'pre-wrap', lineHeight: '19px',
+  },
   body: { display: 'flex', flexDirection: 'column', minWidth: 0 },
   card: {
     border: '1px solid var(--dsw-alias-border-l3)', borderRadius: '12px', padding: '14px 16px',
@@ -3575,6 +3581,8 @@ function Page(): any {
   const [booting, setBooting] = R.useState(false)
   const [reloadKey, setReloadKey] = R.useState(0)
   const [reviewCount, setReviewCount] = R.useState(0)
+  const [versionInfo, setVersionInfo] = R.useState(null)
+  const [dismissedVersionPair, setDismissedVersionPair] = R.useState('')
 
   R.useEffect(() => {
     let alive = true
@@ -3604,6 +3612,16 @@ function Page(): any {
     })()
     return () => { alive = false }
   }, [reloadKey])
+
+  // C-3：启动时轻量查一次版本对比；失败静默（无横幅、无报错），不打断主启动流程。
+  R.useEffect(() => {
+    let alive = true
+    request('/version').then((value: any) => { if (alive) setVersionInfo(value) }).catch(() => null)
+    return () => { alive = false }
+  }, [reloadKey])
+
+  const versionPair = versionInfo && versionInfo.mismatch === true ? String(versionInfo.running) + '->' + String(versionInfo.installed) : ''
+  const showVersionBanner = versionPair !== '' && dismissedVersionPair !== versionPair
 
   const notify = (text: string) => { pushToast(text, 'success') }
   const refreshReviewCount = async () => {
@@ -3670,7 +3688,14 @@ function Page(): any {
         h('button', { type: 'button', style: styles.button, className: 'kh-hover', onClick: () => { setReloadKey(reloadKey + 1); void refreshReviewCount() } }, '刷新'),
       ),
     ),
-    bootError !== null ? h('div', { style: { ...styles.error, margin: '10px 24px 0' }, role: 'alert' }, bootError) : null,
+    // 横幅槽：常驻容器（无横幅时零高度），保证后面内容区与反馈层的位置恒定。
+    h('div', null,
+      bootError !== null ? h('div', { style: { ...styles.error, margin: '10px 24px 0' }, role: 'alert' }, bootError) : null,
+      showVersionBanner ? h('div', { style: { ...styles.warn, margin: '10px 24px 0', display: 'flex', alignItems: 'flex-start', gap: '12px' }, role: 'alert' },
+        h('span', { style: { flex: 1 } }, '知枢版本不一致：已安装 ' + versionInfo.installed + '，但当前运行的仍是 ' + versionInfo.running + '。升级只替换了磁盘文件，完全退出并重新打开 DSH 后新版本才生效。'),
+        h('button', { type: 'button', style: styles.linkButton, className: 'kh-hover', onClick: () => setDismissedVersionPair(versionPair) }, '关闭'),
+      ) : null,
+    ),
     view !== '' ? renderOverlay() : renderTab(),
     h(ToastHost, null),
     h(ConfirmHost, null),
