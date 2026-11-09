@@ -1,6 +1,6 @@
 /** /knowhub HTTP 路由：前缀注册，原生 req/res，统一 {ok,value} / {ok,error} 信封。 */
 import { errorMessage, readBody, writeError, writeOk } from './http.js'
-import { buildDiagnose } from './diagnostics.js'
+import { buildDiagnose, buildVersionCheck, compareVersions, readInstalledPackage } from './diagnostics.js'
 import { listWorkspaces, resolveWorkspace } from './workspace.js'
 import { probeModel, readModelCatalog } from './model.js'
 import { scanProject } from './scan.js'
@@ -32,7 +32,18 @@ async function probeGit(path: string): Promise<any> {
   }
 }
 
-export function createRouter(ctx: any, config: any): { handle: (req: any, res: any) => Promise<void> } {
+export interface RouterOptions {
+  /** apply() 启动时定格的运行版本；缺省时 /version 与 /diagnose 用全局定格值对比。 */
+  runningVersion?: string | null
+}
+
+export function createRouter(ctx: any, config: any, options: RouterOptions = {}): { handle: (req: any, res: any) => Promise<void> } {
+  /** 本路由的版本对比：显式注入了运行版本时用注入值，否则走全局组装（含定格值与包名）。 */
+  const versionCheck = async (): Promise<any> => {
+    if (options.runningVersion === undefined) return buildVersionCheck()
+    const pkg = await readInstalledPackage()
+    return compareVersions(options.runningVersion, pkg?.version ?? null)
+  }
   return {
     async handle(req: any, res: any): Promise<void> {
       const url = new URL(String(req.url ?? '/'), 'http://knowhub.internal')
@@ -43,6 +54,7 @@ export function createRouter(ctx: any, config: any): { handle: (req: any, res: a
         if (method === 'GET' && (path === '/ping' || path === '/')) {
           writeOk(res, { name: 'dsh-knowhub', time: new Date().toISOString(), endpoints: [
             'GET /knowhub/api/ping',
+            'GET /knowhub/api/version',
             'GET /knowhub/api/diagnose?section=all|runtime|storage|workspaces|models|sqlite|tools',
             'GET /knowhub/api/workspaces?path=',
             'GET /knowhub/api/models',
@@ -106,6 +118,10 @@ export function createRouter(ctx: any, config: any): { handle: (req: any, res: a
           const target = url.searchParams.get('path')?.trim() || process.cwd()
           const probe = await probeGit(target)
           writeOk(res, probe)
+          return
+        }
+        if (method === 'GET' && path === '/version') {
+          writeOk(res, await versionCheck())
           return
         }
         if (method === 'GET' && path === '/diagnose') {
