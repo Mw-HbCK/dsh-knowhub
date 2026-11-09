@@ -88,7 +88,7 @@ const styles: Record<string, any> = {
     lineHeight: '20px', cursor: 'pointer',
   },
   danger: {
-    display: 'inline-flex', alignItems: 'center', height: '26px', padding: '0 10px', borderRadius: '13px',
+    display: 'inline-flex', alignItems: 'center', height: '26px', padding: '0 10px', borderRadius: '14px',
     border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)',
     background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', fontSize: '12px', cursor: 'pointer',
   },
@@ -103,8 +103,9 @@ const styles: Record<string, any> = {
   },
   success: {
     margin: '0 0 14px', padding: '10px 12px', borderRadius: '10px',
-    background: 'var(--dsw-specific-sidebar-fill)', border: '1px solid var(--dsw-alias-border-l3)',
-    color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', whiteSpace: 'pre-wrap', lineHeight: '19px',
+    background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 35%, transparent)',
+    color: 'var(--dsw-alias-state-success-label)', fontSize: '12px', whiteSpace: 'pre-wrap', lineHeight: '19px',
   },
   warn: {
     margin: '0 0 14px', padding: '10px 12px', borderRadius: '10px',
@@ -215,7 +216,7 @@ Object.assign(styles, {
     display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer',
   },
   countBadge: {
-    minWidth: '18px', height: '18px', padding: '0 5px', borderRadius: '9px',
+    minWidth: '18px', height: '18px', padding: '0 5px', borderRadius: '999px',
     background: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 22%, transparent)',
     color: 'var(--dsw-alias-state-warn-label)', fontSize: '11px',
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -293,16 +294,6 @@ Object.assign(styles, {
   },
   overlayScroll: { flex: 1, minHeight: 0, overflow: 'auto', padding: '18px clamp(16px,3vw,40px) 48px' },
   overlayInner: { maxWidth: '960px', margin: '0 auto' },
-  modalBackdrop: {
-    position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: '24px', background: 'rgba(0,0,0,0.42)',
-  },
-  modalCard: {
-    width: 'min(640px, calc(100vw - 48px))', maxHeight: '84vh', overflow: 'hidden',
-    display: 'flex', flexDirection: 'column', minHeight: 0,
-    background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)',
-    borderRadius: '12px', boxShadow: '0 24px 60px rgba(0,0,0,0.35)',
-  },
 })
 
 Object.assign(styles, {
@@ -349,7 +340,7 @@ Object.assign(styles, {
   dialogFootHint: { flex: 1, minWidth: 0, fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
   dialogLabel: { display: 'block', marginBottom: '6px', fontSize: '12px', fontWeight: 500, color: 'var(--dsw-alias-label-secondary)' },
   dialogInput: {
-    width: '100%', boxSizing: 'border-box', height: '34px', padding: '0 10px', borderRadius: '8px',
+    width: '100%', boxSizing: 'border-box', height: '32px', padding: '0 10px', borderRadius: '8px',
     border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)',
     color: 'var(--dsw-alias-label-primary)', fontSize: '13px', lineHeight: '20px', outline: 'none',
   },
@@ -656,7 +647,7 @@ function ConfirmHost(): any {
       h('div', { style: styles.dialogHead },
         h('div', { style: { minWidth: 0 } }, h('div', { style: styles.dialogTitle }, pending.title ?? '确认操作')),
       ),
-      h('div', { style: styles.dialogBody }, h('div', { style: styles.confirmBody }, pending.text)),
+      h('div', { style: styles.dialogBody, className: 'kh-scroll' }, h('div', { style: styles.confirmBody }, pending.text)),
       h('div', { style: styles.dialogFoot },
         h('div', { style: styles.dialogFootHint }, 'Esc 取消 · Enter 确认'),
         h('div', { style: { display: 'flex', gap: '8px' } },
@@ -756,7 +747,7 @@ function CreateKbForm(props: any): any {
       ),
       h('button', { type: 'button', style: styles.dialogClose, className: 'kh-hover', title: '关闭', onClick: onCancel }, '✕'),
     ),
-    h('div', { style: styles.dialogBody },
+    h('div', { style: styles.dialogBody, className: 'kh-scroll' },
       h('div', { style: styles.field },
         h('label', { style: styles.dialogLabel }, '名称', h('span', { style: styles.labelRequired }, '＊')),
         h('input', {
@@ -885,7 +876,7 @@ function EditKbForm(props: any): any {
       ),
       h('button', { type: 'button', style: styles.dialogClose, className: 'kh-hover', title: '关闭', onClick: onCancel }, '✕'),
     ),
-    h('div', { style: styles.dialogBody },
+    h('div', { style: styles.dialogBody, className: 'kh-scroll' },
       h('div', { style: styles.field },
         h('label', { style: styles.dialogLabel }, '名称', h('span', { style: styles.labelRequired }, '＊')),
         h('input', {
@@ -968,7 +959,7 @@ function AddDocForm(props: any): any {
       setBusy(false)
     }
   }
-  return h('div', { style: { ...styles.card, background: 'var(--dsw-alias-bg-layer-1)' } },
+  return h('div', { style: styles.card },
     h('div', { style: styles.cardTitle }, '新增知识（进入待审核草稿）'),
     h('div', { style: styles.field }, h('label', { style: styles.label }, '标题'), h('input', { style: styles.input, value: title, onChange: (e: any) => setTitle(e.target.value) })),
     h('div', { style: styles.row },
@@ -1031,7 +1022,7 @@ function ImportMarkdownForm(props: any): any {
     }
   }
 
-  const resultBlock = result === null ? null : h('div', { style: { ...styles.card, background: 'var(--dsw-alias-bg-layer-1)' } },
+  const resultBlock = result === null ? null : h('div', { style: styles.card },
     h('div', { style: styles.cardTitle }, '导入结果',
       h(Badge, { text: '新建 ' + (result.created ?? []).length, style: styles.badgeGreen }),
       h(Badge, { text: '跳过 ' + (result.skipped ?? []).length }),
@@ -1052,7 +1043,7 @@ function ImportMarkdownForm(props: any): any {
       ),
       h('button', { type: 'button', style: styles.dialogClose, className: 'kh-hover', title: '关闭', onClick: onCancel }, '✕'),
     ),
-    h('div', { style: styles.dialogBody },
+    h('div', { style: styles.dialogBody, className: 'kh-scroll' },
       h('div', { style: styles.field },
         h('label', { style: styles.dialogLabel }, '选择 .md 文件（可选）'),
         h('input', { type: 'file', accept: '.md,.markdown,text/markdown', style: { fontSize: '12px' }, onChange: pickFile }),
@@ -1060,7 +1051,7 @@ function ImportMarkdownForm(props: any): any {
       h('div', { style: styles.field },
         h('label', { style: styles.dialogLabel }, 'Markdown 内容', h('span', { style: styles.labelRequired }, '＊')),
         h('textarea', {
-          style: { ...styles.textarea, minHeight: '200px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+          style: { ...styles.textarea, minHeight: '200px', fontFamily: 'var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace)' },
           placeholder: '粘贴知枢导出的 Markdown（含 <!-- knowhub:doc --> 块），或手写 Markdown；没有块时会作为一整篇知识导入。',
           value: content,
           onChange: (event: any) => setContent(event.target.value),
@@ -1333,7 +1324,7 @@ function KbView(props: any): any {
       ),
       taskError !== null ? h('div', { style: { ...styles.error, margin: '10px 0 0' } }, message(taskError)) : null,
       tasks.length === 0 ? h('div', { style: styles.hint }, '尚未运行初始化。点击「开始初始化」后，会先建立项目索引，再按选择的模型生成 Wiki 候选。')
-        : tasks.slice(0, 3).map((task: any) => h('div', { key: task.id, style: { ...styles.card, marginTop: '10px', background: 'var(--dsw-alias-bg-layer-1)' } },
+        : tasks.slice(0, 3).map((task: any) => h('div', { key: task.id, style: { ...styles.card, marginTop: '10px' } },
           h('div', { style: styles.cardTitle }, (TASK_KIND_LABEL[task.kind] ?? task.kind) + '任务 #' + task.id.slice(-8),
             h(Badge, { text: TASK_STATUS_LABEL[task.status] ?? task.status, style: task.status === 'failed' ? styles.badgeAmber : styles.badgeGreen }),
             h('span', { style: styles.hint }, '尝试 ' + (task.attempt ?? 1) + ' 次 · 创建于 ' + new Date(task.createdAt).toLocaleString('zh-CN')),
@@ -1386,7 +1377,7 @@ function KbView(props: any): any {
         h('button', { type: 'button', style: styles.button, className: 'kh-hover', onClick: () => { if (detail) void loadTaskData(detail.knowledgeBase.id) } }, '刷新增量状态'),
       ),
       incError !== null ? h('div', { style: { ...styles.error, margin: '10px 0 0' } }, message(incError)) : null,
-      incPlan !== null ? h('div', { style: { ...styles.card, marginTop: '10px', background: 'var(--dsw-alias-bg-layer-1)' } },
+      incPlan !== null ? h('div', { style: { ...styles.card, marginTop: '10px' } },
         h('div', { style: styles.cardTitle }, '变更预览（未写入任何数据）'),
         h('div', { style: styles.meta },
           h('span', null, '模式：' + (incPlan.mode === 'git' ? 'Git' : '哈希')),
@@ -1713,22 +1704,22 @@ Object.assign(styles, {
   diffStat: { display: 'inline-flex', alignItems: 'center', height: '22px', padding: '0 8px', borderRadius: '6px', fontSize: '12px', border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)' },
   diffStatAdd: { color: 'var(--dsw-alias-state-success-primary)', borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent)' },
   diffStatDel: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)' },
-  diffPane: { marginTop: '10px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px', background: 'var(--dsw-alias-bg-l1)', overflow: 'auto', maxHeight: '58vh', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: '12px', lineHeight: '20px' },
+  diffPane: { marginTop: '10px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px', background: 'var(--dsw-alias-bg-l1, var(--dsw-alias-bg-layer-1))', overflow: 'auto', maxHeight: '58vh', fontFamily: 'var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace)', fontSize: '12px', lineHeight: '20px' },
   diffRow: { display: 'flex', width: '100%' },
   diffRowAdd: { background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent)' },
   diffRowDel: { background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 16%, transparent)' },
-  diffRowEmpty: { background: 'color-mix(in srgb, var(--dsw-alias-bg-l2) 55%, transparent)' },
+  diffRowEmpty: { background: 'color-mix(in srgb, var(--dsw-alias-bg-l2, var(--dsw-alias-bg-layer-1)) 55%, transparent)' },
   diffGutter: { flex: '0 0 44px', textAlign: 'right', padding: '0 6px', color: 'var(--dsw-alias-label-tertiary)', userSelect: 'none', whiteSpace: 'nowrap' },
   diffMarkerCell: { flex: '0 0 20px', textAlign: 'center', userSelect: 'none', color: 'var(--dsw-alias-label-secondary)' },
   diffText: { flex: '1 1 auto', minWidth: 0, padding: '0 10px 0 2px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' },
   diffSplitCol: { flex: '1 1 50%', minWidth: 0 },
   diffSplitLeft: { flex: '1 1 50%', minWidth: 0, borderRight: '1px solid var(--dsw-alias-border-l2)' },
-  diffHead: { display: 'flex', position: 'sticky', top: 0, zIndex: 2, background: 'var(--dsw-alias-bg-l2)', borderBottom: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px', lineHeight: '22px' },
+  diffHead: { display: 'flex', position: 'sticky', top: 0, zIndex: 2, background: 'var(--dsw-alias-bg-l2, var(--dsw-alias-bg-layer-1))', borderBottom: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px', lineHeight: '22px' },
   diffHeadCell: { flex: '1 1 auto', padding: '0 10px 0 2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   diffTextNoWrap: { flex: '1 1 auto', padding: '0 10px 0 2px', whiteSpace: 'pre', wordBreak: 'normal', color: 'var(--dsw-alias-label-primary)' },
-  diffWordAdd: { borderRadius: '3px', background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent)' },
-  diffWordDel: { borderRadius: '3px', background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)' },
-  diffFoldRow: { display: 'flex', alignItems: 'center', gap: '6px', width: '100%', padding: '2px 10px', border: '0', borderTop: '1px dashed var(--dsw-alias-border-l2)', borderBottom: '1px dashed var(--dsw-alias-border-l2)', background: 'color-mix(in srgb, var(--dsw-alias-bg-l2) 55%, transparent)', color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px', lineHeight: '20px', cursor: 'pointer', textAlign: 'left' },
+  diffWordAdd: { borderRadius: '4px', background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent)' },
+  diffWordDel: { borderRadius: '4px', background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)' },
+  diffFoldRow: { display: 'flex', alignItems: 'center', gap: '6px', width: '100%', padding: '2px 10px', border: '0', borderTop: '1px dashed var(--dsw-alias-border-l2)', borderBottom: '1px dashed var(--dsw-alias-border-l2)', background: 'color-mix(in srgb, var(--dsw-alias-bg-l2, var(--dsw-alias-bg-layer-1)) 55%, transparent)', color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px', lineHeight: '20px', cursor: 'pointer', textAlign: 'left' },
   diffChangeBlockActive: { boxShadow: 'inset 2px 0 0 var(--dsw-alias-state-business-primary)' },
 })
 
@@ -3513,14 +3504,14 @@ function SettingsView(): any {
             ),
             h('button', { type: 'button', style: styles.dialogClose, className: 'kh-hover', title: '关闭', onClick: () => setPreview(null) }, '✕'),
           ),
-          h('div', { style: styles.dialogBody },
+          h('div', { style: styles.dialogBody, className: 'kh-scroll' },
             h('div', { style: styles.meta, marginBottom: '8px' },
               h('span', null, '知识库 ' + preview.kbCount + ' 个'),
               h('span', null, '知识 ' + preview.docCount + ' 条'),
               h('span', null, '版本 ' + preview.versionCount + ' 条'),
               h('span', null, formatBytes(preview.bytes)),
             ),
-            (preview.kbs ?? []).length === 0 ? EmptyState({ text: '这个备份里没有知识库数据。' }) : (preview.kbs ?? []).map((kb: any) => h('div', { key: kb.id, style: { ...styles.card, background: 'var(--dsw-alias-bg-layer-1)', marginBottom: '8px' } },
+            (preview.kbs ?? []).length === 0 ? EmptyState({ text: '这个备份里没有知识库数据。' }) : (preview.kbs ?? []).map((kb: any) => h('div', { key: kb.id, style: { ...styles.card, marginBottom: '8px' } },
               h('div', { style: styles.cardTitle }, kb.name,
                 h(Badge, { text: kb.scope === 'user' ? '用户级' : '工作区级' }),
                 kb.exists ? h(Badge, { text: '当前已存在', style: styles.badgeGreen }) : h(Badge, { text: '当前不存在', style: styles.badgeAmber }),
