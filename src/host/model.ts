@@ -197,7 +197,7 @@ export async function runModelCall(ctx: any, input: ModelCallInput): Promise<Mod
   const provider = input.provider.trim()
   const model = input.model.trim()
   if (provider === '' || model === '') throw new Error('必须同时提供 provider 与 model')
-  const maxTokens = typeof input.maxTokens === 'number' && Number.isFinite(input.maxTokens) ? Math.max(1, Math.min(8192, Math.trunc(input.maxTokens))) : 1200
+  const maxTokens = typeof input.maxTokens === 'number' && Number.isFinite(input.maxTokens) ? Math.max(1, Math.min(100000, Math.trunc(input.maxTokens))) : 1200
   const timeoutMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? Math.max(5000, Math.min(180000, Math.trunc(input.timeoutMs))) : 90000
 
   const controller = new AbortController()
