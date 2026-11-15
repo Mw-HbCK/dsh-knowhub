@@ -136,7 +136,7 @@ cmd /c mklink /J "$env:USERPROFILE\.dsh\profiles\knowhub\node_modules\dsh-knowhu
 本包捆绑了 [Archify](https://github.com/tt-a1i/archify) 3.2.0 技能（位于 `skills/archify/`），安装 KnowHub 后 DSH 的技能系统即可加载它，用一句话让 Agent 绘制可交互的图：架构图（architecture）、流程图（workflow）、时序图（sequence）、数据流图（dataflow）、状态机（lifecycle）、ER 图（erd）、类图（class）、树形知识图谱（tree）、时间线（timeline）与瀑布图（waterfall），产出为独立 HTML 文件落在工作区（默认 `.archify/` 目录）。
 
 - 用法示例：在 DSH 对话中点名技能，如「Use the archify skill to map this repository's runtime architecture」或「用 archify 把这个项目的模块关系画成 tree 图」。
-- 捆绑机制与上游官方适配包 `@tt-a1i/archify-dsh` 一致（通过 `cordis.patch.yml` 注册文件系统技能提供方）；**不要再同时安装 `@tt-a1i/archify-dsh`**，功能重复。同名个人/项目技能的优先级高于本捆绑版本。
+- 捆绑机制与上游官方适配包 `@tt-a1i/archify-dsh` 一致（通过 `cordis.patch.yml` 注册文件系统技能提供方）；本包的提供方名为 `knowhub-archify`，与适配包的 `archify-plugin` 不冲突，可同装，但功能重复，一般二选一即可。同名个人/项目技能的优先级高于本捆绑版本。
 - 为控制包体积，捆绑时仅剔除了 `examples/` 下 15 个已渲染的示例 HTML（约 13MB，技能文档与运行均不引用它们）；其余文件与上游 3.2.0 保持一致。
 - 许可：Archify 技能为 Apache-2.0，其 `LICENSE`、`LICENSE-MIT`、`NOTICE`、`THIRD_PARTY_NOTICES.md` 均随附在 `skills/archify/` 内；KnowHub 本体仍为 MIT。
 
