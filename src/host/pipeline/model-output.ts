@@ -24,10 +24,10 @@ export function isTruncatedModelOutput(meta: { finishKind: string | null }): boo
   return meta.finishKind === 'max-tokens'
 }
 
-/** 截断重试时的预算：翻倍，但不超过 runModelCall 的上限 8192。 */
+/** 截断重试时的预算：翻倍，但不超过 runModelCall 的上限 100000。 */
 export function retryTokenBudget(maxTokens: number): number {
   const base = Number.isFinite(maxTokens) ? Math.max(1, Math.trunc(maxTokens)) : 1
-  return Math.min(8192, base * 2)
+  return Math.min(100000, base * 2)
 }
 
 function compactHead(text: string): string {

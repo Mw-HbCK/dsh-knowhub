@@ -40,9 +40,9 @@ export class IncrementalError extends Error {
 }
 
 const LIMITS = {
-  economy: { maxFiles: 12000, maxHashes: 1500, maxDocs: 2, maxTokens: 1200, maxSnippetFiles: 4, maxSnippetChars: 4000 },
-  balanced: { maxFiles: 20000, maxHashes: 3000, maxDocs: 4, maxTokens: 1800, maxSnippetFiles: 6, maxSnippetChars: 6000 },
-  quality: { maxFiles: 30000, maxHashes: 6000, maxDocs: 7, maxTokens: 2400, maxSnippetFiles: 8, maxSnippetChars: 8000 },
+  economy: { maxFiles: 12000, maxHashes: 1500, maxDocs: 2, maxTokens: 10000, maxSnippetFiles: 4, maxSnippetChars: 4000 },
+  balanced: { maxFiles: 20000, maxHashes: 3000, maxDocs: 4, maxTokens: 20000, maxSnippetFiles: 6, maxSnippetChars: 6000 },
+  quality: { maxFiles: 30000, maxHashes: 6000, maxDocs: 7, maxTokens: 50000, maxSnippetFiles: 8, maxSnippetChars: 8000 },
 } as const
 
 type Strategy = keyof typeof LIMITS

@@ -129,7 +129,7 @@ await test('纯函数：截断识别、可操作错误信息与预算加倍', as
   assert.equal(MAX_OUTPUT_ATTEMPTS, 2, '首次 + 重试一次')
   assert.equal(retryTokenBudget(1600), 3200)
   assert.equal(retryTokenBudget(2200), 4400)
-  assert.equal(retryTokenBudget(8000), 8192, '重试预算不超过 runModelCall 上限')
+  assert.equal(retryTokenBudget(60000), 100000, '重试预算不超过 runModelCall 上限')
 
   const noJson = parseModelJson('抱歉，我无法输出 JSON。', { finishKind: 'stop', maxTokens: 1600, attempt: 1 })
   assert.equal(noJson.ok, false)
@@ -163,8 +163,8 @@ await test('初始化：模型输出被截断时加倍预算自动重试一次�
   const task = await waitTask(started.body.value.task.id)
   assert.equal(task.status, 'succeeded', JSON.stringify(task.errorCode ?? '') + ' ' + JSON.stringify(task.errorDetail ?? ''))
   assert.equal(llmState.calls.length, 2, '应调用两次：首次截断 + 加倍预算重试')
-  assert.equal(llmState.calls[0].maxTokens, 1600, 'economy 策略首次预算')
-  assert.equal(llmState.calls[1].maxTokens, 3200, '截断后预算翻倍')
+  assert.equal(llmState.calls[0].maxTokens, 10000, 'economy 策略首次预算')
+  assert.equal(llmState.calls[1].maxTokens, 20000, '截断后预算翻倍')
   const logs = (task.logs ?? []).map((item) => String(item.message)).join('\n')
   assert.match(logs, /截断/)
   const calls = all(db, 'SELECT * FROM llm_calls WHERE kb_id = ? ORDER BY rowid', [kb.id])
@@ -188,7 +188,7 @@ await test('初始化：持续截断时任务失败，并给出换模型/调策�
   assert.match(String(task.errorDetail ?? ''), /非推理模型/)
   assert.match(String(task.errorDetail ?? ''), /模型使用策略/)
   assert.equal(llmState.calls.length, 2, '最多尝试两次，不做无限重试')
-  assert.deepEqual(llmState.calls.map((entry) => entry.maxTokens), [2200, 4400])
+  assert.deepEqual(llmState.calls.map((entry) => entry.maxTokens), [20000, 40000])
   assert.equal(search.listDocuments(db, { kbIds: [kb.id] }).length, 0, '失败时不应留下半成品知识')
   assert.equal(store.getKnowledgeBase(db, kb.id).status, 'error')
   llmState.mode = 'good'

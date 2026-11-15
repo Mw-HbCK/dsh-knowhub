@@ -135,7 +135,7 @@ cmd /c mklink /J "$env:USERPROFILE\.dsh\profiles\knowhub\node_modules\dsh-knowhu
 
 **初始化或增量任务失败，提示模型调用失败怎么办？**
 
-在知识库详情点右上「编辑配置」→「测试模型」，先用一句 ping 确认该 provider / model 当前能否调通；不通说明是模型配置问题（凭据、baseURL、模型名），与知识库无关。若提示「模型输出被截断」，说明该模型把输出预算消耗在思考过程上：换一个非推理模型，或把「模型使用策略」调高（economy 1600 → balanced 2200 → quality 3200 tokens，截断时还会自动加倍重试一次）。
+在知识库详情点右上「编辑配置」→「测试模型」，先用一句 ping 确认该 provider / model 当前能否调通；不通说明是模型配置问题（凭据、baseURL、模型名），与知识库无关。若提示「模型输出被截断」，说明该模型把输出预算消耗在思考过程上：换一个非推理模型，或把「模型使用策略」调高（economy 10000 → balanced 20000 → quality 50000 tokens，截断时还会自动加倍重试一次）。
 
 **为什么生成的知识都是「待审核」？**
 

@@ -36,9 +36,9 @@ export class InitError extends Error {
 const DOC_KINDS = new Set(['wiki', 'decision', 'issue', 'todo', 'memory', 'convention', 'preference'])
 
 const STRATEGY_LIMITS = {
-  economy: { maxFiles: 12000, maxHashes: 1500, maxContextChars: 12000, maxTokens: 1600, wikiPages: 2 },
-  balanced: { maxFiles: 20000, maxHashes: 3000, maxContextChars: 20000, maxTokens: 2200, wikiPages: 4 },
-  quality: { maxFiles: 30000, maxHashes: 6000, maxContextChars: 30000, maxTokens: 3200, wikiPages: 7 },
+  economy: { maxFiles: 12000, maxHashes: 1500, maxContextChars: 12000, maxTokens: 10000, wikiPages: 2 },
+  balanced: { maxFiles: 20000, maxHashes: 3000, maxContextChars: 20000, maxTokens: 20000, wikiPages: 4 },
+  quality: { maxFiles: 30000, maxHashes: 6000, maxContextChars: 30000, maxTokens: 50000, wikiPages: 7 },
 } as const
 
 type Strategy = keyof typeof STRATEGY_LIMITS
