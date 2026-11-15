@@ -1,5 +1,5 @@
 /**
- * 初始化流水线（M2）：真实扫描 → 文件索引 → 用知识库绑定模型生成 Wiki 候选 → 存为待审核草稿。
+ * 初始化流水线（M2）：真实扫描 → 文件索引 → 用知识库绑定模型按内容区（Repo Wiki / 知识卡片 / 长期记忆）生成知识候选 → 存为待审核草稿。
  *
  * 硬约束（对应规范 §4 / §14.2 / §14.3）：
  * - 模型只用 knowledge_base.model_provider + model_id，绝不回退到全局默认；目录里找不到即报错；
@@ -36,25 +36,42 @@ export class InitError extends Error {
 const DOC_KINDS = new Set(['wiki', 'decision', 'issue', 'todo', 'memory', 'convention', 'preference'])
 
 const STRATEGY_LIMITS = {
-  economy: { maxFiles: 12000, maxHashes: 1500, maxContextChars: 12000, maxTokens: 10000, wikiPages: 2 },
-  balanced: { maxFiles: 20000, maxHashes: 3000, maxContextChars: 20000, maxTokens: 20000, wikiPages: 4 },
-  quality: { maxFiles: 30000, maxHashes: 6000, maxContextChars: 30000, maxTokens: 50000, wikiPages: 7 },
+  economy: { maxFiles: 12000, maxHashes: 1500, maxContextChars: 20000, maxTokens: 10000, wikiPages: 2 },
+  balanced: { maxFiles: 20000, maxHashes: 3000, maxContextChars: 40000, maxTokens: 20000, wikiPages: 4 },
+  quality: { maxFiles: 30000, maxHashes: 6000, maxContextChars: 60000, maxTokens: 50000, wikiPages: 7 },
 } as const
 
 type Strategy = keyof typeof STRATEGY_LIMITS
 
+/**
+ * 初始化按内容区规划模型调用：Repo Wiki（wiki）、知识卡片（cards）、长期记忆（memory）三条线分别生成。
+ * 此前只规划了 Wiki 主题、且提示词把 kind 限定在 wiki/decision/issue/todo，初始化永远产不出
+ * memory/preference，卡片类也只能靠模型在 Wiki 主题里顺带给出——三个页签因此长期为空。
+ */
 interface PlannedCall {
   purpose: string
+  area: 'wiki' | 'cards' | 'memory'
   topics: string[]
 }
 
 function planCalls(strategy: Strategy): PlannedCall[] {
-  const base: PlannedCall[] = [{ purpose: 'wiki-overview', topics: ['项目总览', '技术栈与依赖'] }]
-  if (strategy === 'economy') return base
-  const second: PlannedCall = { purpose: 'wiki-architecture', topics: ['系统架构', '核心模块'] }
-  if (strategy === 'balanced') return [...base, second]
-  return [...base, second, { purpose: 'wiki-interfaces', topics: ['关键接口与数据流', '技术选型与决策记录', '已知问题与待确认事项'] }]
+  const overview: PlannedCall = { purpose: 'wiki-overview', area: 'wiki', topics: ['项目总览', '技术栈与依赖'] }
+  const cardsCore: PlannedCall = { purpose: 'cards-core', area: 'cards', topics: ['技术选型与决策', '已知问题与风险'] }
+  if (strategy === 'economy') return [overview, cardsCore]
+  const architecture: PlannedCall = { purpose: 'wiki-architecture', area: 'wiki', topics: ['系统架构', '核心模块'] }
+  const memoryCore: PlannedCall = { purpose: 'memory-core', area: 'memory', topics: ['项目背景与长期事实', '项目约定与协作偏好'] }
+  if (strategy === 'balanced') return [overview, architecture, cardsCore, memoryCore]
+  return [
+    overview,
+    architecture,
+    { purpose: 'wiki-interfaces', area: 'wiki', topics: ['关键接口与数据流'] },
+    cardsCore,
+    { purpose: 'cards-actions', area: 'cards', topics: ['待办事项与待确认问题'] },
+    memoryCore,
+  ]
 }
+
+const AREA_LABELS: Record<PlannedCall['area'], string> = { wiki: 'Repo Wiki', cards: '知识卡片', memory: '长期记忆' }
 
 function updateKbStatus(db: Db, kbId: string, status: string, detail: any): void {
   run(db, 'UPDATE knowledge_bases SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?', [status, JSON.stringify(detail).slice(0, 4000), Date.now(), kbId])
@@ -92,7 +109,28 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function buildContext(index: ProjectIndex, strategy: Strategy): string {
+/** 读取关键文件摘录补强上下文：README 优先、其次入口文件；只读已进入索引的文件（敏感文件已被索引排除），读不到就跳过。 */
+async function readKeyFileSnippets(root: string, index: ProjectIndex): Promise<Array<{ path: string; text: string }>> {
+  const known = new Set(index.files.map((file) => file.path))
+  const picks: Array<{ path: string; cap: number }> = []
+  const readme = index.files.find((file) => /^readme(\.[a-z-]+)?\.md$/i.test(file.path))
+  if (readme) picks.push({ path: readme.path, cap: 6000 })
+  for (const hint of index.stack.entryHints.slice(0, 2)) {
+    if (known.has(hint) && hint !== readme?.path) picks.push({ path: hint, cap: 2500 })
+  }
+  const snippets: Array<{ path: string; text: string }> = []
+  for (const pick of picks) {
+    try {
+      const text = await fs.readFile(join(root, pick.path), 'utf8')
+      snippets.push({ path: pick.path, text: text.slice(0, pick.cap) })
+    } catch {
+      // 读不到就跳过，不阻断初始化。
+    }
+  }
+  return snippets
+}
+
+function buildContext(index: ProjectIndex, strategy: Strategy, keySnippets: Array<{ path: string; text: string }> = []): string {
   const limits = STRATEGY_LIMITS[strategy]
   const parts: string[] = []
   parts.push('项目根：<项目根>')
@@ -109,6 +147,13 @@ function buildContext(index: ProjectIndex, strategy: Strategy): string {
   parts.push('文件清单（部分，相对路径）：')
   parts.push(index.files.slice(0, fileLimit).map((file) => file.path).join('\n'))
   if (index.files.length > fileLimit) parts.push('…（其余 ' + (index.files.length - fileLimit) + ' 个文件未列出）')
+  if (keySnippets.length > 0) {
+    parts.push('关键文件内容摘录：')
+    for (const snippet of keySnippets) {
+      parts.push('--- ' + snippet.path + ' ---')
+      parts.push(snippet.text)
+    }
+  }
   if (index.configSnippets.length > 0) {
     parts.push('关键配置摘要：')
     for (const snippet of index.configSnippets) {
@@ -120,20 +165,66 @@ function buildContext(index: ProjectIndex, strategy: Strategy): string {
   return text.length > limits.maxContextChars ? text.slice(0, limits.maxContextChars) + '\n…（上下文已按策略截断）' : text
 }
 
-function buildPrompt(topics: string[], context: string): string {
+function strictRules(): string[] {
   return [
-    '你是知枢 KnowHub 的项目文档分析器。请只依据下面提供的仓库事实，生成 Repo Wiki 候选文档。',
     '严格要求：',
     '1. 只输出一个 JSON 对象，不要输出任何解释、前后缀或 Markdown 代码围栏之外的文字。',
-    '2. 不得编造未在上下文中出现的模块职责、接口、依赖或决策；无法确认的内容写入 uncertain 数组。',
-    '3. 文档正文使用简体中文 Markdown；涉及文件时使用相对路径（如 src/host/tasks.ts）。',
-    '4. 每条文档必须给出 sources，值为上方文件清单中真实存在的相对路径；没有可引用文件时 sources 为空数组。',
+    '2. 不得编造未在上下文中出现的模块职责、接口、依赖、决策或事实；无法确认的内容写入 uncertain 数组，证据不足的条目宁可不写。',
+    '3. 正文使用简体中文 Markdown；涉及文件时使用相对路径（如 src/host/tasks.ts）。',
+    '4. 每条必须给出 sources，值为上方文件清单中真实存在的相对路径；没有可引用文件时 sources 为空数组。',
     '5. 不得输出密钥、凭据、绝对路径或完整环境变量值。',
+    '6. 不要写「该模块负责相关功能」这类空话；每句话都要落到上下文中可核对的事实上。',
+  ]
+}
+
+function buildPrompt(planned: PlannedCall, context: string): string {
+  if (planned.area === 'cards') {
+    return [
+      '你是知枢 KnowHub 的项目知识分析器。请只依据下面提供的仓库事实，提炼「知识卡片」候选：结论先行、短小具体的卡片，而不是长篇文档。',
+      ...strictRules(),
+      '',
+      '需要提炼的主题：' + planned.topics.join('、'),
+      '每个主题提炼 1-3 张卡片；没有足够证据的主题直接跳过，不要硬凑。',
+      'kind 只能是 decision / issue / todo / convention 之一：',
+      '- decision（技术选型与决策）：正文写清选了什么、为什么、代价或替代方案；',
+      '- issue（已知问题与风险）：正文写清现象、影响范围与证据文件；',
+      '- todo（待办与待确认）：正文写清待办或待确认什么、为什么重要；',
+      '- convention（项目约定）：正文写清约定内容与适用范围（如目录组织、命名、提交或测试约定）。',
+      '每张卡片正文 80-400 字，第一句就是结论。',
+      '输出 JSON 结构：',
+      '{"documents":[{"title":"卡片标题","kind":"decision","tags":["标签"],"confidence":0.6,"sources":["相对路径"],"body":"Markdown 正文","uncertain":["待确认事项"]}]}',
+      '',
+      '仓库事实：',
+      context,
+    ].join('\n')
+  }
+  if (planned.area === 'memory') {
+    return [
+      '你是知枢 KnowHub 的长期记忆分析器。请只依据下面提供的仓库事实，提炼值得长期保存、跨会话复用的「长期记忆」候选。',
+      ...strictRules(),
+      '',
+      '需要提炼的主题：' + planned.topics.join('、'),
+      'kind 只能是 memory / preference 之一：',
+      '- memory（长期事实）：项目目标与背景、当前阶段与里程碑、稳定的技术事实与边界——只记长期有效的内容，不记一次性细节；',
+      '- preference（偏好与约定倾向）：从文档与配置中能明确看出的协作或工程偏好；看不出就不要写这一类。',
+      '每个主题提炼 1-2 条；每条正文 2-6 句完整中文，先给事实，再给一句理由或来源说明。',
+      '输出 JSON 结构：',
+      '{"documents":[{"title":"记忆标题","kind":"memory","tags":["标签"],"confidence":0.6,"sources":["相对路径"],"body":"Markdown 正文","uncertain":["待确认事项"]}]}',
+      '',
+      '仓库事实：',
+      context,
+    ].join('\n')
+  }
+  return [
+    '你是知枢 KnowHub 的项目文档分析器。请只依据下面提供的仓库事实，生成 Repo Wiki 候选文档。',
+    ...strictRules(),
     '',
-    '需要生成的文档主题：' + topics.join('、'),
+    '需要生成的文档主题：' + planned.topics.join('、'),
+    '每个主题必须恰好生成一篇文档，标题与主题对应。',
+    '正文结构建议：先一段概述，再用小标题展开结构与要点；每篇 300-1200 字。',
     '输出 JSON 结构：',
     '{"documents":[{"title":"文档标题","kind":"wiki","tags":["标签"],"confidence":0.6,"sources":["相对路径"],"body":"Markdown 正文","uncertain":["待确认事项"]}]}',
-    'kind 只能是 wiki / decision / issue / todo 之一：架构、模块、总览、技术栈用 wiki；技术选型理由用 decision；已知问题用 issue；待确认事项用 todo。',
+    'kind 只能是 wiki：本轮只生成 Repo Wiki 文档。',
     '',
     '仓库事实：',
     context,
@@ -240,29 +331,33 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
     if (!modelAvailable) throw new InitError('MODEL_NOT_AVAILABLE', '知识库绑定的模型已不可用（提供方 ' + kb.modelProvider + ' / 模型 ' + kb.modelId + '）。请在知识库设置中重新选择模型；插件不会自动改用其它模型。')
     log('info', '使用知识库绑定模型：' + kb.modelProvider + ' / ' + kb.modelId)
 
-    // 4) 按策略调用模型生成候选
+    // 4) 按策略调用模型生成候选（三条线分别规划，单线失败不拖垮整轮）
     const calls = planCalls(strategy)
-    const context = buildContext(index, strategy)
+    const keySnippets = await readKeyFileSnippets(root, index)
+    if (keySnippets.length > 0) log('info', '已读取 ' + keySnippets.length + ' 个关键文件的内容摘录补强上下文')
+    const context = buildContext(index, strategy, keySnippets)
     const knownPaths = new Set(index.files.map((file) => file.path))
     const created: Array<{ id: string; title: string }> = []
     const conflicts: Array<{ title: string; reason: string }> = []
     const rejected: string[] = []
+    const callFailures: Array<{ purpose: string; code: string; message: string }> = []
     let documentsSeen = 0
     const callSummaries: any[] = []
 
     const secrets = { root, storageRoot }
-    currentStage = '生成 Wiki 候选'
+    currentStage = '生成知识候选'
     for (let position = 0; position < calls.length; position += 1) {
       const planned = calls[position]
       if (!planned) continue
       ensureNotAborted(signal)
       const percent = 40 + Math.round((position / calls.length) * 45)
-      progress(percent, '调用模型生成：' + planned.topics.join('、'))
-      const prompt = buildPrompt(planned.topics, context)
+      progress(percent, '调用模型生成' + AREA_LABELS[planned.area] + '：' + planned.topics.join('、'))
+      const prompt = buildPrompt(planned, context)
       log('info', '调用模型（' + planned.purpose + '，主题：' + planned.topics.join('、') + '，提示长度 ' + prompt.length + ' 字符）')
       // 推理模型可能把 token 预算耗在思考上导致输出被截断：识别出来并加倍预算重试一次。
       let budget: number = limits.maxTokens
       let parsed: any = null
+      let callFailure: { code: string; message: string } | null = null
       for (let attempt = 1; ; attempt += 1) {
         ensureNotAborted(signal)
         const result = await runModelCall(ctx, {
@@ -302,9 +397,27 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
           budget = nextBudget
           continue
         }
-        throw new InitError(output.code, output.message)
+        // 单条线的输出问题（截断重试后仍失败 / 结构不合法）只跳过本条线，其余线继续；
+        // 全部线都失败时在收尾处按优先级抛出最可操作的错误（见下方收尾判断）。
+        callFailure = { code: output.code, message: output.message }
+        break
       }
-      const validated = validateDocuments(parsed, knownPaths, secrets)
+      if (callFailure) {
+        callFailures.push({ purpose: planned.purpose, code: callFailure.code, message: callFailure.message })
+        log('warn', '本轮生成失败，已跳过（' + planned.purpose + '，' + callFailure.code + '）：' + callFailure.message)
+        continue
+      }
+      let validated: ReturnType<typeof validateDocuments>
+      try {
+        validated = validateDocuments(parsed, knownPaths, secrets)
+      } catch (validationError) {
+        if (validationError instanceof InitError && validationError.code === 'MODEL_OUTPUT_INVALID') {
+          callFailures.push({ purpose: planned.purpose, code: validationError.code, message: validationError.message })
+          log('warn', '本轮生成失败，已跳过（' + planned.purpose + '，' + validationError.code + '）：' + validationError.message)
+          continue
+        }
+        throw validationError
+      }
       rejected.push(...validated.rejected)
       documentsSeen += validated.documents.length
       if (validated.rejected.length > 0) log('warn', '丢弃 ' + validated.rejected.length + ' 条不合格文档候选')
@@ -348,12 +461,17 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
           )
         }
         created.push({ id: doc.id, title: doc.title })
-        log('info', '已创建 Wiki 候选草稿「' + doc.title + '」（来源文件 ' + candidate.sources.length + ' 个，可信度 ' + candidate.confidence.toFixed(2) + '）')
+        log('info', '已创建候选草稿「' + doc.title + '」（来源文件 ' + candidate.sources.length + ' 个，可信度 ' + candidate.confidence.toFixed(2) + '）')
       }
     }
 
     if (created.length === 0 && conflicts.length === 0) {
-      throw new InitError('NO_DOCUMENT_CREATED', '本次没有创建任何 Wiki 候选（模型输出未通过校验）')
+      // 全部线都失败：优先报截断（有明确的换模型/升档建议），其次报输出不合法，最后才是无产出。
+      const truncatedFailure = callFailures.find((failure) => failure.code === 'MODEL_OUTPUT_TRUNCATED')
+      if (truncatedFailure) throw new InitError('MODEL_OUTPUT_TRUNCATED', truncatedFailure.message)
+      const invalidFailure = callFailures.find((failure) => failure.code === 'MODEL_OUTPUT_INVALID')
+      if (invalidFailure) throw new InitError('MODEL_OUTPUT_INVALID', invalidFailure.message)
+      throw new InitError('NO_DOCUMENT_CREATED', '本次没有创建任何知识候选（模型输出未通过校验）')
     }
     if (created.length === 0) {
       // 幂等重跑：模型给出的主题都已在库中（草稿或已批准）。不视为失败，也不覆盖任何已有知识。
@@ -371,6 +489,7 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
       documents: created,
       conflicts,
       rejected,
+      failures: callFailures,
       index: { fileCount: index.fileCount, textFileCount: index.textFileCount, byLanguage: index.byLanguage.slice(0, 8), excludedDirs: index.excludedDirs, skippedSensitive: index.skippedSensitive, skippedSymlinks: index.skippedSymlinks, truncated: index.truncated },
       workspace: { id: workspace.id, title: workspace.title, path: root },
       finishedAt: new Date().toISOString(),
@@ -391,7 +510,7 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
       }, null, 2) + '\n',
     )
     progress(100, '完成')
-    log('info', '初始化完成：候选文档 ' + created.length + ' 篇，冲突 ' + conflicts.length + ' 条，模型调用 ' + calls.length + ' 次')
+    log('info', '初始化完成：候选文档 ' + created.length + ' 篇，冲突 ' + conflicts.length + ' 条，模型调用 ' + calls.length + ' 次' + (callFailures.length > 0 ? '，其中 ' + callFailures.length + ' 条线生成失败已跳过' : ''))
     return { documents: created.length, conflicts: conflicts.length, files: index.fileCount, calls: calls.length, model: summary.model, purposes: calls.map((call) => call.purpose) }
   } catch (error) {
     const code = error instanceof InitError ? error.code : 'INITIALIZE_FAILED'
