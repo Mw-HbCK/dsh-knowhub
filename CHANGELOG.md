@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-15
+
 ### 新增
 
 - 捆绑 Archify 3.2.0 技能（`skills/archify/`，Apache-2.0，来源为上游官方 DSH 适配包 `@tt-a1i/archify-dsh@1.1.0` 的技能目录）：`cordis.patch.yml` 新增文件系统技能提供方注册，安装 KnowHub 后即可在 DSH 中点名 archify 绘制架构图、流程图、时序图、树形知识图谱等交互式 HTML。为控制体积仅剔除其 `examples/` 下 15 个已渲染示例 HTML（约 13MB，未被技能文档或运行时引用），其余文件与上游一致，许可与 NOTICE 文件随附。
