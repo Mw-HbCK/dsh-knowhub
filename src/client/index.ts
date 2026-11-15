@@ -2891,8 +2891,10 @@ function DocsExplorer(props: any): any {
   const PAGE_SIZE = 50
 
   // 类型与状态都在宿主侧筛选（支持逗号多值），这样总数统计与分页都是真实的。
+  // all=1：管理面全量。浏览页签是给库主看的，不按宿主进程 cwd 反查的作用域过滤，
+  // 否则识别不到当前工作区时，工作区级知识库的文档会整体消失（与知识库页签的 all=1 对齐）。
   const buildQuery = (searchText: string, pageNumber: number): string => {
-    const parts: string[] = ['limit=' + PAGE_SIZE, 'page=' + pageNumber]
+    const parts: string[] = ['all=1', 'limit=' + PAGE_SIZE, 'page=' + pageNumber]
     const q = searchText.trim()
     if (q !== '') parts.push('q=' + encodeURIComponent(q))
     const kinds = kind === '' ? conf.kinds : [kind]

@@ -7,7 +7,7 @@
 import { errorMessage, readBody, writeError, writeOk } from '../http.js'
 import { openDatabase } from '../db/db.js'
 import { resolveStorageRoot } from '../paths.js'
-import { listKnowledgeBases } from '../kb/store.js'
+import { listAllKnowledgeBases, listKnowledgeBases } from '../kb/store.js'
 import { buildOverview, listDocumentsAcrossKbs } from '../overview.js'
 import { readSettings, settingsSnapshot, writeSettings } from '../settings.js'
 import { backupStats, createBackup, listBackups, migrateStorage, previewBackup, restoreBackup } from '../backup.js'
@@ -61,7 +61,11 @@ export async function handleM5Request(route: RouteContext): Promise<boolean> {
     await fail(res, async () => {
       const scope = await resolveScope(ctx, process.cwd())
       const kbId = str(url.searchParams.get('kbId'))
-      const visible = listKnowledgeBases(db(), scope.scopeKeys)
+      // 管理面全量（与 GET /kb?all=1 同一约定）：面板浏览页签显式带 all=1 时列出全部知识库的文档。
+      // 作用域由宿主进程 cwd 反查，桌面端常识别不到当前工作区，工作区级知识库会被整体过滤、
+      // 页签恒为空；不带 all 的调用（工具/注入等）仍严格按作用域隔离，不放宽。
+      const wantAll = ['1', 'true', 'yes'].includes(str(url.searchParams.get('all')).toLowerCase())
+      const visible = wantAll ? listAllKnowledgeBases(db()) : listKnowledgeBases(db(), scope.scopeKeys)
       let kbIds = visible.map((kb) => kb.id)
       if (kbId !== '') {
         const target = visible.find((kb) => kb.id === kbId)
@@ -79,6 +83,7 @@ export async function handleM5Request(route: RouteContext): Promise<boolean> {
       writeOk(res, {
         workspaceId: scope.workspaceId,
         scopeKeys: scope.scopeKeys,
+        all: wantAll,
         knowledgeBases: visible.map((kb) => ({ id: kb.id, name: kb.name, scope: kb.scope, status: kb.status })),
         ...value,
       })
