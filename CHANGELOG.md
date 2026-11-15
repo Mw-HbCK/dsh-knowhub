@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-15
+
+知识生产系统优化与 Archify 深度集成全量发布（W1–W5）：Prompt 分层与 Wiki 两段式生成、七类知识独立策略、提炼价值判断与 relation 机制、Memory 双层口径与增量护栏、规则质检、Archify 图表生产集成（新增 doc_diagrams 数据表，迁移 v8）。同时包含 0.10.2 的两项修复（技能提供方改名、浏览页签作用域）。
+
 ### 变更（知识生产优化 W1：Prompt 分层 + Wiki 两段式生成）
 
 - **Prompt 分层**：全部初始化 Prompt 收拢到 `src/host/pipeline/prompts/`——L0 全局写作规则（`writing-rules.ts`：输出纪律 + 写作原则，含套话黑名单、事实分级、反模板结构）由各任务 Prompt 统一引用；L1 任务层分为 Wiki 规划、Wiki 写作、知识卡片、长期记忆四个模块。原先散落在流水线中的内联提示词已删除，无孤儿模板。
