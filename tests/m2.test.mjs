@@ -63,6 +63,38 @@ const registry = {
 // ---- 可编程的 llm 替身：真实记录 provider/model/maxTokens 与是否被调用 ----
 const llmState = { mode: 'good', delayMs: 0, calls: [] }
 
+function cardsPayload() {
+  return JSON.stringify({
+    documents: [
+      {
+        title: '选用 React 构建界面',
+        kind: 'decision',
+        tags: ['技术选型'],
+        confidence: 0.7,
+        sources: ['package.json'],
+        body: '项目选用 React + TypeScript 构建界面（见 package.json 依赖），代价是需要维护构建流水线，替代方案是原生 DOM 但开发效率较低。',
+        uncertain: [],
+      },
+    ],
+  })
+}
+
+function memoryPayload() {
+  return JSON.stringify({
+    documents: [
+      {
+        title: '项目背景与目标',
+        kind: 'memory',
+        tags: ['背景'],
+        confidence: 0.7,
+        sources: ['README.md'],
+        body: '这是一个 React + TypeScript 示例仓库（见 README.md），目标是验证知识库初始化流水线能把仓库事实沉淀为可审核的长期记忆。',
+        uncertain: [],
+      },
+    ],
+  })
+}
+
 function documentsPayload() {
   return JSON.stringify({
     documents: [
@@ -114,7 +146,12 @@ const llm = {
         yield { type: 'finish', reason: { kind: 'aborted', failure: { message: '用户取消', code: 'ABORTED' } } }
         return
       }
-      const text = llmState.mode === 'bad-json' ? '抱歉，我无法按要求输出 JSON。' : documentsPayload()
+      const promptText = JSON.stringify(options.messages ?? '')
+      const text = llmState.mode === 'bad-json'
+        ? '抱歉，我无法按要求输出 JSON。'
+        : promptText.includes('「知识卡片」候选') ? cardsPayload()
+        : promptText.includes('「长期记忆」候选') ? memoryPayload()
+        : documentsPayload()
       yield { type: 'text-delta', index: 0, text }
       yield { type: 'usage', usage: { inputTokens: 1000, outputTokens: 500 } }
       yield { type: 'finish', reason: { kind: 'stop' } }
@@ -197,21 +234,23 @@ await test('初始化成功：绑定模型被真实调用、生成草稿 Wiki、
   assert.equal(task.progress, 100)
   assert.ok(Array.isArray(task.logs) && task.logs.length > 0, '任务应有日志')
   const docs = search.listDocuments(db, { kbIds: [kbA.id] })
-  assert.equal(docs.length, 2)
+  assert.equal(docs.length, 4)
   assert.ok(docs.every((doc) => doc.status === 'draft'), '生成内容必须是待审核草稿')
+  assert.ok(docs.some((doc) => doc.kind === 'decision'), '卡片线应产出 decision 知识卡片')
+  assert.ok(docs.some((doc) => doc.kind === 'memory'), '记忆线应产出 memory 长期记忆')
   const overview = docs.find((doc) => doc.title === '项目总览')
   assert.ok(overview, '应生成项目总览')
   const sources = all(db, 'SELECT * FROM sources WHERE doc_id = ?', [overview.id])
   assert.ok(sources.length >= 2, 'Wiki 应关联来源文件')
   assert.ok(sources.every((source) => source.kind === 'file'))
   const calls = all(db, 'SELECT * FROM llm_calls WHERE kb_id = ? ORDER BY id', [kbA.id])
-  assert.equal(calls.length, 2, 'balanced 策略应产生 2 次模型调用')
+  assert.equal(calls.length, 4, 'balanced 策略应产生 4 次模型调用（Wiki 2 + 卡片 1 + 记忆 1）')
   assert.ok(calls.every((entry) => entry.provider === 'amd' && entry.model === 'DeepSeek-V4-Flash'))
-  assert.ok(calls.every((entry) => entry.purpose === 'wiki-overview' || entry.purpose === 'wiki-architecture'))
+  assert.ok(calls.every((entry) => ['wiki-overview', 'wiki-architecture', 'cards-core', 'memory-core'].includes(entry.purpose)))
   assert.ok(calls.every((entry) => entry.prompt_tokens === 1000 && entry.completion_tokens === 500))
   const kbRow = store.getKnowledgeBase(db, kbA.id)
   assert.equal(kbRow.status, 'ready')
-  assert.ok(llmState.calls.length === 2 && llmState.calls.every((entry) => entry.provider === 'amd' && entry.model === 'DeepSeek-V4-Flash'))
+  assert.ok(llmState.calls.length === 4 && llmState.calls.every((entry) => entry.provider === 'amd' && entry.model === 'DeepSeek-V4-Flash'))
 })
 
 await test('模型隔离：第二个知识库用另一个模型，互不影响', async () => {
@@ -221,12 +260,12 @@ await test('模型隔离：第二个知识库用另一个模型，互不影响',
   const task = await waitTask(taskId)
   assert.equal(task.status, 'succeeded')
   const calls = all(db, 'SELECT * FROM llm_calls WHERE kb_id = ? ORDER BY id', [kbB.id])
-  assert.equal(calls.length, 1, 'economy 策略应只调用 1 次模型')
+  assert.equal(calls.length, 2, 'economy 策略应调用 2 次模型（Wiki 总览 + 卡片）')
   assert.equal(calls[0].provider, 'deepseek-account')
   assert.equal(calls[0].model, 'deepseek-v4-pro')
   assert.ok(llmState.calls.every((entry) => entry.provider === 'deepseek-account' && entry.model === 'deepseek-v4-pro'))
   const first = all(db, 'SELECT * FROM llm_calls WHERE kb_id = ?', [kbA.id])
-  assert.equal(first.length, 2)
+  assert.equal(first.length, 4)
   assert.ok(first.every((entry) => entry.model === 'DeepSeek-V4-Flash'))
 })
 
@@ -328,7 +367,7 @@ await test('用户级知识库初始化必须显式指定工作区', async () =>
   assert.equal(started.status, 200)
   const task = await waitTask(started.body.value.task.id)
   assert.equal(task.status, 'succeeded')
-  assert.ok(llmState.calls.length === 1)
+  assert.ok(llmState.calls.length === 2)
 })
 
 await test('索引与模型调用可通过 HTTP 读取（供面板展示真实数据）', async () => {
