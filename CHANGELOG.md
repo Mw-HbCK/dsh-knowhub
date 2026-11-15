@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 捆绑 Archify 3.2.0 技能（`skills/archify/`，Apache-2.0，来源为上游官方 DSH 适配包 `@tt-a1i/archify-dsh@1.1.0` 的技能目录）：`cordis.patch.yml` 新增文件系统技能提供方注册，安装 KnowHub 后即可在 DSH 中点名 archify 绘制架构图、流程图、时序图、树形知识图谱等交互式 HTML。为控制体积仅剔除其 `examples/` 下 15 个已渲染示例 HTML（约 13MB，未被技能文档或运行时引用），其余文件与上游一致，许可与 NOTICE 文件随附。
+
 ### 变更
 
 - 知识库初始化改为按内容区分线生成：除 Repo Wiki 外，新增「知识卡片」（技术选型与决策、已知问题与风险，quality 档另含待办与待确认）与「长期记忆」（项目背景与长期事实、项目约定与协作偏好）两条线，各用专门提示词与类型约束。此前初始化只规划 Wiki 主题且提示词把类型限定为 wiki/decision/issue/todo，批准后知识卡片与记忆页签长期为空。

@@ -13,3 +13,13 @@
     # 客户端半边（node 侧为空壳）：dsh.client 声明让客户端模块系统把它编入 window.__DSH_BOOT__
     - id: knowhub-ui
       name: dsh-knowhub
+
+    # 捆绑 Archify 技能（架构图 / 流程图 / 时序图 / 树形知识图谱等，Archify 3.2.0，Apache-2.0）：
+    # 技能文件随本包分发在 skills/archify，机制与上游 @tt-a1i/archify-dsh 适配包一致；
+    # bundledSkillDir 锚定本包的安装位置解析，不拼宿主路径。与 @tt-a1i/archify-dsh 二选一安装，不要同装。
+    - id: knowhub-archify-skill
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: archify-plugin
+        includeDefaultRoots: true
+        bundledSkillDir: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-knowhub/package.json')), 'skills')

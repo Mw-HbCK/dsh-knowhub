@@ -52,7 +52,8 @@
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
-    "assets"
+    "assets",
+    "skills"
   ],
   "devDependencies": {
     "@types/node": "^22.19.0",
