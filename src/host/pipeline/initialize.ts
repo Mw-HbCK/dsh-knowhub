@@ -1,5 +1,7 @@
 /**
- * 初始化流水线（M2）：真实扫描 → 文件索引 → 用知识库绑定模型按内容区（Repo Wiki / 知识卡片 / 长期记忆）生成知识候选 → 存为待审核草稿。
+ * 初始化流水线（M2）：真实扫描 → 文件索引 → 用知识库绑定模型按内容区生成知识候选 → 存为待审核草稿。
+ * Repo Wiki 为两段式：先规划调用产出文档大纲（篇目/父子/证据文件），再按篇用证据文件内容生成；
+ * 知识卡片与长期记忆仍按主题线生成。全部 Prompt 已分层到 pipeline/prompts/（L0 写作规则 + L1 任务层）。
  *
  * 硬约束（对应规范 §4 / §14.2 / §14.3）：
  * - 模型只用 knowledge_base.model_provider + model_id，绝不回退到全局默认；目录里找不到即报错；
@@ -11,7 +13,7 @@
  */
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import { get, run, type Db } from '../db/db.js'
+import { all, get, run, type Db } from '../db/db.js'
 import { atomicWrite, kbDir } from '../kb/files.js'
 import { contentHash, type KbRow } from '../kb/store.js'
 import { createDocument, getDocument, slugify } from '../search.js'
@@ -21,6 +23,12 @@ import { MAX_OUTPUT_ATTEMPTS, parseModelJson, retryTokenBudget } from './model-o
 import { listWorkspaces } from '../workspace.js'
 import { indexProject, saveProjectIndex, type ProjectIndex } from './index.js'
 import { createTask, runTask, type TaskRow } from '../tasks.js'
+import { buildWikiPlanPrompt, parseWikiPlan, type WikiPlanEntry } from './prompts/wiki-plan.js'
+import { buildWikiWritePrompt } from './prompts/wiki-write.js'
+import { buildCardsPrompt } from './prompts/cards.js'
+import { buildMemoryPrompt } from './prompts/memory.js'
+import { runModelQualityCheck, runQualityChecks } from './quality.js'
+import { generateDiagramForDoc } from './diagrams.js'
 import { newId } from '../utils/id.js'
 import { errorMessage } from '../http.js'
 import { readSettings } from '../settings.js'
@@ -36,42 +44,48 @@ export class InitError extends Error {
 const DOC_KINDS = new Set(['wiki', 'decision', 'issue', 'todo', 'memory', 'convention', 'preference'])
 
 const STRATEGY_LIMITS = {
-  economy: { maxFiles: 12000, maxHashes: 1500, maxContextChars: 20000, maxTokens: 10000, wikiPages: 2 },
-  balanced: { maxFiles: 20000, maxHashes: 3000, maxContextChars: 40000, maxTokens: 20000, wikiPages: 4 },
-  quality: { maxFiles: 30000, maxHashes: 6000, maxContextChars: 60000, maxTokens: 50000, wikiPages: 7 },
+  economy: { maxFiles: 12000, maxHashes: 1500, maxContextChars: 20000, maxTokens: 10000, planMaxDocs: 5, wikiGroupSize: 4, evidenceChars: 12000 },
+  balanced: { maxFiles: 20000, maxHashes: 3000, maxContextChars: 40000, maxTokens: 20000, planMaxDocs: 8, wikiGroupSize: 3, evidenceChars: 20000 },
+  quality: { maxFiles: 30000, maxHashes: 6000, maxContextChars: 60000, maxTokens: 50000, planMaxDocs: 12, wikiGroupSize: 3, evidenceChars: 30000 },
 } as const
 
 type Strategy = keyof typeof STRATEGY_LIMITS
 
 /**
- * 初始化按内容区规划模型调用：Repo Wiki（wiki）、知识卡片（cards）、长期记忆（memory）三条线分别生成。
- * 此前只规划了 Wiki 主题、且提示词把 kind 限定在 wiki/decision/issue/todo，初始化永远产不出
- * memory/preference，卡片类也只能靠模型在 Wiki 主题里顺带给出——三个页签因此长期为空。
+ * 初始化按内容区组织模型调用（W1 两段式）：
+ * - Repo Wiki 先做一次结构规划调用产出大纲，再按篇（分组）用证据文件内容生成（见 runInitialize 第 4 步）；
+ * - 知识卡片与长期记忆仍按主题线生成，主题表只保留在这两条线；
+ * Wiki 规划失败时回退到 legacyWikiOutline 的固定篇目，保证初始化不因规划一步整体失败。
  */
 interface PlannedCall {
   purpose: string
-  area: 'wiki' | 'cards' | 'memory'
+  area: 'cards' | 'memory'
   topics: string[]
 }
 
 function planCalls(strategy: Strategy): PlannedCall[] {
-  const overview: PlannedCall = { purpose: 'wiki-overview', area: 'wiki', topics: ['项目总览', '技术栈与依赖'] }
   const cardsCore: PlannedCall = { purpose: 'cards-core', area: 'cards', topics: ['技术选型与决策', '已知问题与风险'] }
-  if (strategy === 'economy') return [overview, cardsCore]
-  const architecture: PlannedCall = { purpose: 'wiki-architecture', area: 'wiki', topics: ['系统架构', '核心模块'] }
+  if (strategy === 'economy') return [cardsCore]
   const memoryCore: PlannedCall = { purpose: 'memory-core', area: 'memory', topics: ['项目背景与长期事实', '项目约定与协作偏好'] }
-  if (strategy === 'balanced') return [overview, architecture, cardsCore, memoryCore]
+  if (strategy === 'balanced') return [cardsCore, memoryCore]
   return [
-    overview,
-    architecture,
-    { purpose: 'wiki-interfaces', area: 'wiki', topics: ['关键接口与数据流'] },
     cardsCore,
     { purpose: 'cards-actions', area: 'cards', topics: ['待办事项与待确认问题'] },
     memoryCore,
   ]
 }
 
-const AREA_LABELS: Record<PlannedCall['area'], string> = { wiki: 'Repo Wiki', cards: '知识卡片', memory: '长期记忆' }
+/** Wiki 规划不可用时的回退大纲（旧版固定主题表，仅作兜底）。 */
+function legacyWikiOutline(strategy: Strategy): WikiPlanEntry[] {
+  const entry = (title: string, angle: WikiPlanEntry['angle']): WikiPlanEntry => ({ title, purpose: '', angle, evidence: [], parentTitle: null, diagram: null })
+  const base = [entry('项目总览', 'overview'), entry('技术栈与依赖', 'general')]
+  if (strategy === 'economy') return base
+  const more = [...base, entry('系统架构', 'architecture'), entry('核心模块', 'module')]
+  if (strategy === 'balanced') return more
+  return [...more, entry('关键接口与数据流', 'interface')]
+}
+
+const AREA_LABELS: Record<PlannedCall['area'], string> = { cards: '知识卡片', memory: '长期记忆' }
 
 function updateKbStatus(db: Db, kbId: string, status: string, detail: any): void {
   run(db, 'UPDATE knowledge_bases SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?', [status, JSON.stringify(detail).slice(0, 4000), Date.now(), kbId])
@@ -165,70 +179,28 @@ function buildContext(index: ProjectIndex, strategy: Strategy, keySnippets: Arra
   return text.length > limits.maxContextChars ? text.slice(0, limits.maxContextChars) + '\n…（上下文已按策略截断）' : text
 }
 
-function strictRules(): string[] {
-  return [
-    '严格要求：',
-    '1. 只输出一个 JSON 对象，不要输出任何解释、前后缀或 Markdown 代码围栏之外的文字。',
-    '2. 不得编造未在上下文中出现的模块职责、接口、依赖、决策或事实；无法确认的内容写入 uncertain 数组，证据不足的条目宁可不写。',
-    '3. 正文使用简体中文 Markdown；涉及文件时使用相对路径（如 src/host/tasks.ts）。',
-    '4. 每条必须给出 sources，值为上方文件清单中真实存在的相对路径；没有可引用文件时 sources 为空数组。',
-    '5. 不得输出密钥、凭据、绝对路径或完整环境变量值。',
-    '6. 不要写「该模块负责相关功能」这类空话；每句话都要落到上下文中可核对的事实上。',
-  ]
-}
-
-function buildPrompt(planned: PlannedCall, context: string): string {
-  if (planned.area === 'cards') {
-    return [
-      '你是知枢 KnowHub 的项目知识分析器。请只依据下面提供的仓库事实，提炼「知识卡片」候选：结论先行、短小具体的卡片，而不是长篇文档。',
-      ...strictRules(),
-      '',
-      '需要提炼的主题：' + planned.topics.join('、'),
-      '每个主题提炼 1-3 张卡片；没有足够证据的主题直接跳过，不要硬凑。',
-      'kind 只能是 decision / issue / todo / convention 之一：',
-      '- decision（技术选型与决策）：正文写清选了什么、为什么、代价或替代方案；',
-      '- issue（已知问题与风险）：正文写清现象、影响范围与证据文件；',
-      '- todo（待办与待确认）：正文写清待办或待确认什么、为什么重要；',
-      '- convention（项目约定）：正文写清约定内容与适用范围（如目录组织、命名、提交或测试约定）。',
-      '每张卡片正文 80-400 字，第一句就是结论。',
-      '输出 JSON 结构：',
-      '{"documents":[{"title":"卡片标题","kind":"decision","tags":["标签"],"confidence":0.6,"sources":["相对路径"],"body":"Markdown 正文","uncertain":["待确认事项"]}]}',
-      '',
-      '仓库事实：',
-      context,
-    ].join('\n')
+/** 读取大纲各篇证据文件的内容摘录：只读已进入索引的文件，按篇目顺序去重，总量受策略上限约束。 */
+async function readEvidenceFiles(root: string, entries: WikiPlanEntry[], knownPaths: Set<string>, capChars: number): Promise<string> {
+  const seen = new Set<string>()
+  const parts: string[] = []
+  let used = 0
+  for (const entry of entries) {
+    for (const path of entry.evidence) {
+      if (seen.has(path) || !knownPaths.has(path)) continue
+      seen.add(path)
+      try {
+        const text = await fs.readFile(join(root, path), 'utf8')
+        const slice = text.slice(0, 3000)
+        if (used + slice.length > capChars) return parts.join('\n')
+        parts.push('--- ' + path + ' ---')
+        parts.push(slice)
+        used += slice.length
+      } catch {
+        // 读不到就跳过，不阻断生成。
+      }
+    }
   }
-  if (planned.area === 'memory') {
-    return [
-      '你是知枢 KnowHub 的长期记忆分析器。请只依据下面提供的仓库事实，提炼值得长期保存、跨会话复用的「长期记忆」候选。',
-      ...strictRules(),
-      '',
-      '需要提炼的主题：' + planned.topics.join('、'),
-      'kind 只能是 memory / preference 之一：',
-      '- memory（长期事实）：项目目标与背景、当前阶段与里程碑、稳定的技术事实与边界——只记长期有效的内容，不记一次性细节；',
-      '- preference（偏好与约定倾向）：从文档与配置中能明确看出的协作或工程偏好；看不出就不要写这一类。',
-      '每个主题提炼 1-2 条；每条正文 2-6 句完整中文，先给事实，再给一句理由或来源说明。',
-      '输出 JSON 结构：',
-      '{"documents":[{"title":"记忆标题","kind":"memory","tags":["标签"],"confidence":0.6,"sources":["相对路径"],"body":"Markdown 正文","uncertain":["待确认事项"]}]}',
-      '',
-      '仓库事实：',
-      context,
-    ].join('\n')
-  }
-  return [
-    '你是知枢 KnowHub 的项目文档分析器。请只依据下面提供的仓库事实，生成 Repo Wiki 候选文档。',
-    ...strictRules(),
-    '',
-    '需要生成的文档主题：' + planned.topics.join('、'),
-    '每个主题必须恰好生成一篇文档，标题与主题对应。',
-    '正文结构建议：先一段概述，再用小标题展开结构与要点；每篇 300-1200 字。',
-    '输出 JSON 结构：',
-    '{"documents":[{"title":"文档标题","kind":"wiki","tags":["标签"],"confidence":0.6,"sources":["相对路径"],"body":"Markdown 正文","uncertain":["待确认事项"]}]}',
-    'kind 只能是 wiki：本轮只生成 Repo Wiki 文档。',
-    '',
-    '仓库事实：',
-    context,
-  ].join('\n')
+  return parts.join('\n')
 }
 
 interface CandidateDoc {
@@ -331,8 +303,7 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
     if (!modelAvailable) throw new InitError('MODEL_NOT_AVAILABLE', '知识库绑定的模型已不可用（提供方 ' + kb.modelProvider + ' / 模型 ' + kb.modelId + '）。请在知识库设置中重新选择模型；插件不会自动改用其它模型。')
     log('info', '使用知识库绑定模型：' + kb.modelProvider + ' / ' + kb.modelId)
 
-    // 4) 按策略调用模型生成候选（三条线分别规划，单线失败不拖垮整轮）
-    const calls = planCalls(strategy)
+    // 4) 生成候选：Wiki 两段式（规划→按篇生成），卡片/记忆按主题线；单线失败不拖垮整轮。
     const keySnippets = await readKeyFileSnippets(root, index)
     if (keySnippets.length > 0) log('info', '已读取 ' + keySnippets.length + ' 个关键文件的内容摘录补强上下文')
     const context = buildContext(index, strategy, keySnippets)
@@ -343,21 +314,18 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
     const callFailures: Array<{ purpose: string; code: string; message: string }> = []
     let documentsSeen = 0
     const callSummaries: any[] = []
+    const executedPurposes: string[] = []
+    const docIdBySlug = new Map<string, string>()
+    const createdDocIds = new Set<string>()
 
     const secrets = { root, storageRoot }
     currentStage = '生成知识候选'
-    for (let position = 0; position < calls.length; position += 1) {
-      const planned = calls[position]
-      if (!planned) continue
-      ensureNotAborted(signal)
-      const percent = 40 + Math.round((position / calls.length) * 45)
-      progress(percent, '调用模型生成' + AREA_LABELS[planned.area] + '：' + planned.topics.join('、'))
-      const prompt = buildPrompt(planned, context)
-      log('info', '调用模型（' + planned.purpose + '，主题：' + planned.topics.join('、') + '，提示长度 ' + prompt.length + ' 字符）')
-      // 推理模型可能把 token 预算耗在思考上导致输出被截断：识别出来并加倍预算重试一次。
+
+    // 执行一次模型调用（含截断升额度重试与 llm_calls 记录）。mode='documents' 时做文档校验并返回候选；
+    // mode='raw' 时返回原始解析结果（规划调用用）。本线失败记入 callFailures 并返回 null；模型调用本身失败按既有语义抛错。
+    const executeCall = async (planned: { purpose: string }, prompt: string, mode: 'documents' | 'raw'): Promise<any> => {
+      executedPurposes.push(planned.purpose)
       let budget: number = limits.maxTokens
-      let parsed: any = null
-      let callFailure: { code: string; message: string } | null = null
       for (let attempt = 1; ; attempt += 1) {
         ensureNotAborted(signal)
         const result = await runModelCall(ctx, {
@@ -382,14 +350,27 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
         const truncated = result.finishKind === 'max-tokens'
         if (output.ok) {
           const docCount = Array.isArray(output.value?.documents) ? output.value.documents.length : 0
-          if (docCount === 0 && truncated && attempt < MAX_OUTPUT_ATTEMPTS) {
+          if (mode === 'documents' && docCount === 0 && truncated && attempt < MAX_OUTPUT_ATTEMPTS) {
             const nextBudget = retryTokenBudget(budget)
             log('warn', '模型在 ' + budget + ' tokens 预算内没有写出任何文档（finish=max-tokens，思考 ' + String(result.reasoningChars ?? 0) + ' 字符），改用 ' + nextBudget + ' tokens 重试一次')
             budget = nextBudget
             continue
           }
-          parsed = output.value
-          break
+          if (mode === 'raw') return output.value
+          try {
+            const validated = validateDocuments(output.value, knownPaths, secrets)
+            rejected.push(...validated.rejected)
+            documentsSeen += validated.documents.length
+            if (validated.rejected.length > 0) log('warn', '丢弃 ' + validated.rejected.length + ' 条不合格文档候选')
+            return validated.documents
+          } catch (validationError) {
+            if (validationError instanceof InitError && validationError.code === 'MODEL_OUTPUT_INVALID') {
+              callFailures.push({ purpose: planned.purpose, code: validationError.code, message: validationError.message })
+              log('warn', '本轮生成失败，已跳过（' + planned.purpose + '，' + validationError.code + '）：' + validationError.message)
+              return null
+            }
+            throw validationError
+          }
         }
         if (output.truncated && attempt < MAX_OUTPUT_ATTEMPTS) {
           const nextBudget = retryTokenBudget(budget)
@@ -397,37 +378,25 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
           budget = nextBudget
           continue
         }
-        // 单条线的输出问题（截断重试后仍失败 / 结构不合法）只跳过本条线，其余线继续；
-        // 全部线都失败时在收尾处按优先级抛出最可操作的错误（见下方收尾判断）。
-        callFailure = { code: output.code, message: output.message }
-        break
+        callFailures.push({ purpose: planned.purpose, code: output.code, message: output.message })
+        log('warn', '本轮生成失败，已跳过（' + planned.purpose + '，' + output.code + '）：' + output.message)
+        return null
       }
-      if (callFailure) {
-        callFailures.push({ purpose: planned.purpose, code: callFailure.code, message: callFailure.message })
-        log('warn', '本轮生成失败，已跳过（' + planned.purpose + '，' + callFailure.code + '）：' + callFailure.message)
-        continue
-      }
-      let validated: ReturnType<typeof validateDocuments>
-      try {
-        validated = validateDocuments(parsed, knownPaths, secrets)
-      } catch (validationError) {
-        if (validationError instanceof InitError && validationError.code === 'MODEL_OUTPUT_INVALID') {
-          callFailures.push({ purpose: planned.purpose, code: validationError.code, message: validationError.message })
-          log('warn', '本轮生成失败，已跳过（' + planned.purpose + '，' + validationError.code + '）：' + validationError.message)
-          continue
-        }
-        throw validationError
-      }
-      rejected.push(...validated.rejected)
-      documentsSeen += validated.documents.length
-      if (validated.rejected.length > 0) log('warn', '丢弃 ' + validated.rejected.length + ' 条不合格文档候选')
+    }
 
-      for (const candidate of validated.documents) {
-        const existing = get(db, 'SELECT id, status, title FROM documents WHERE kb_id = ? AND slug = ? AND deleted_at IS NULL', [kb.id, slugify(candidate.title)])
+    // 已有文档标题快照：质检的交叉引用检查用（只许引用真实存在的文档）。
+    const existingTitles = all(db, 'SELECT title FROM documents WHERE kb_id = ? AND deleted_at IS NULL', [kb.id]).map((row: any) => String(row.title))
+
+    // 候选落盘：同 slug 已存在则记冲突不覆盖；Wiki 候选可带 parentId（由大纲父篇经 docIdBySlug 解析）。
+    // 质检 flags（规则检查 + 模型质检）附到草稿正文的「质检提示」段，仅供审核参考，不拦截生成。
+    const storeCandidates = async (candidates: CandidateDoc[], parentSlugByDocSlug?: Map<string, string | null>, extraFlags?: Map<string, string[]>, siblingTitles?: string[]): Promise<void> => {
+      for (const candidate of candidates) {
+        const slug = slugify(candidate.title)
+        const existing = get(db, 'SELECT id, status, title FROM documents WHERE kb_id = ? AND slug = ? AND deleted_at IS NULL', [kb.id, slug])
         if (existing) {
+          docIdBySlug.set(slug, String(existing.id))
           conflicts.push({ title: candidate.title, reason: existing.status === 'approved' ? '已存在同主题的已批准文档，本次候选未覆盖' : '已存在同主题草稿，未创建重复文档（等待审核或增量更新）' })
           log('warn', '跳过候选「' + candidate.title + '」：' + (existing.status === 'approved' ? '已批准文档不可被静默覆盖' : '已存在同主题草稿'))
-          // 记入冲突审核项：让差异内容进入人工审核队列，而不是丢弃或覆盖。
           try {
             const existingDoc = getDocument(db, String(existing.id))
             if (existingDoc) {
@@ -443,7 +412,17 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
         if (candidate.uncertain.length > 0) {
           bodyParts.push('', '## 待确认事项', ...candidate.uncertain.map((item) => '- ' + item))
         }
+        const qualityFlags = [
+          ...runQualityChecks({ title: candidate.title, kind: candidate.kind, body: candidate.body, sources: candidate.sources, siblingTitles: siblingTitles ?? existingTitles }),
+          ...(extraFlags?.get(slug) ?? []),
+        ]
+        if (qualityFlags.length > 0) {
+          bodyParts.push('', '## 质检提示（自动检查，仅供审核参考）', ...qualityFlags.map((flag) => '- ' + flag))
+        }
         const body = bodyParts.join('\n') + '\n\n> 本文由模型基于仓库索引生成（' + kb.modelProvider + ' / ' + kb.modelId + '），当前为待审核草稿。\n'
+        let parentId: string | null = null
+        const parentSlug = parentSlugByDocSlug?.get(slug)
+        if (parentSlug) parentId = docIdBySlug.get(parentSlug) ?? null
         const doc = await createDocument(db, storageRoot, kb, {
           title: candidate.title,
           kind: candidate.kind,
@@ -452,7 +431,10 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
           status: 'draft',
           verifyState: candidate.verifyState,
           confidence: candidate.confidence,
+          ...(parentId ? { parentId } : {}),
         })
+        docIdBySlug.set(slug, doc.id)
+        createdDocIds.add(doc.id)
         for (const source of candidate.sources) {
           run(
             db,
@@ -463,6 +445,63 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
         created.push({ id: doc.id, title: doc.title })
         log('info', '已创建候选草稿「' + doc.title + '」（来源文件 ' + candidate.sources.length + ' 个，可信度 ' + candidate.confidence.toFixed(2) + '）')
       }
+    }
+
+    // 4a) Wiki 第一段：结构规划。失败（输出不合法/为空）回退固定篇目，不让整轮初始化失败。
+    progress(40, '规划 Repo Wiki 文档结构')
+    const planRaw = await executeCall({ purpose: 'wiki-plan' }, buildWikiPlanPrompt(context, limits.planMaxDocs), 'raw')
+    let outline: WikiPlanEntry[] = []
+    if (planRaw) {
+      const plan = parseWikiPlan(planRaw, knownPaths, limits.planMaxDocs)
+      outline = plan.entries
+      for (const dropped of plan.dropped) log('warn', 'Wiki 规划条目被丢弃：' + dropped)
+    }
+    if (outline.length === 0) {
+      log('warn', 'Wiki 结构规划未产出可用大纲，回退到固定篇目规划')
+      outline = legacyWikiOutline(strategy)
+    } else {
+      log('info', 'Wiki 大纲共 ' + outline.length + ' 篇：' + outline.map((entry) => entry.title).join('、'))
+    }
+
+    // 4b) Wiki 第二段：按大纲分组生成（父先子后），上下文为各篇证据文件内容。
+    const groupSize = limits.wikiGroupSize
+    const outlineIndexBySlug = new Map(outline.map((entry, index) => [slugify(entry.title), index]))
+    const parentSlugByDocSlug = new Map(outline.map((entry) => [slugify(entry.title), entry.parentTitle ? slugify(entry.parentTitle) : null]))
+    const baseFacts = context.slice(0, 4000)
+    for (let start = 0; start < outline.length; start += groupSize) {
+      const group = outline.slice(start, start + groupSize)
+      ensureNotAborted(signal)
+      progress(45 + Math.round((start / outline.length) * 35), '调用模型生成 Repo Wiki：' + group.map((entry) => entry.title).join('、'))
+      const evidenceText = await readEvidenceFiles(root, group, knownPaths, limits.evidenceChars)
+      const prompt = buildWikiWritePrompt({ entries: group, outline, evidenceText: evidenceText === '' ? '（本组篇目没有可读的证据文件内容，请依据项目基本事实谨慎撰写，证据不足处写入 uncertain）' : evidenceText, baseFacts })
+      log('info', '调用模型（wiki-write，篇目：' + group.map((entry) => entry.title).join('、') + '，提示长度 ' + prompt.length + ' 字符）')
+      const docs = await executeCall({ purpose: 'wiki-write' }, prompt, 'documents')
+      if (docs) {
+        const sorted = [...docs].sort((a: CandidateDoc, b: CandidateDoc) => (outlineIndexBySlug.get(slugify(a.title)) ?? 999) - (outlineIndexBySlug.get(slugify(b.title)) ?? 999))
+        let extraFlags: Map<string, string[]> | undefined
+        if (readSettings(db).qualityModelCheck) {
+          extraFlags = new Map<string, string[]>()
+          for (const candidate of sorted) {
+            if (candidate.body.length < 800) continue
+            const issues = await runModelQualityCheck(ctx, db, kb, taskId, { title: candidate.title, kind: candidate.kind, body: candidate.body })
+            if (issues.length > 0) extraFlags.set(slugify(candidate.title), issues)
+          }
+        }
+        await storeCandidates(sorted, parentSlugByDocSlug, extraFlags, [...existingTitles, ...outline.map((entry) => entry.title)])
+      }
+    }
+
+    // 4c) 知识卡片与长期记忆两条线（主题规划保持不变，Prompt 已分层到 prompts/）。
+    const lineCalls = planCalls(strategy)
+    for (let position = 0; position < lineCalls.length; position += 1) {
+      const planned = lineCalls[position]
+      if (!planned) continue
+      ensureNotAborted(signal)
+      progress(82 + Math.round((position / lineCalls.length) * 10), '调用模型生成' + AREA_LABELS[planned.area] + '：' + planned.topics.join('、'))
+      const prompt = planned.area === 'cards' ? buildCardsPrompt(planned.topics, context) : buildMemoryPrompt(planned.topics, context)
+      log('info', '调用模型（' + planned.purpose + '，主题：' + planned.topics.join('、') + '，提示长度 ' + prompt.length + ' 字符）')
+      const docs = await executeCall(planned, prompt, 'documents')
+      if (docs) await storeCandidates(docs)
     }
 
     if (created.length === 0 && conflicts.length === 0) {
@@ -476,6 +515,31 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
     if (created.length === 0) {
       // 幂等重跑：模型给出的主题都已在库中（草稿或已批准）。不视为失败，也不覆盖任何已有知识。
       log('warn', '本次没有新增草稿：' + conflicts.length + ' 篇候选均与已有文档同主题，已保留原文档不覆盖')
+    }
+
+    // 4d) Archify 图表：按大纲简报为本轮新建的 Wiki 生成图表（档位设置控制；失败只记日志，不影响知识生成）
+    const archifyAuto = readSettings(db).archifyAuto
+    const archifyEnabled = archifyAuto === 'all' || (archifyAuto === 'quality' && strategy === 'quality')
+    let diagramsCreated = 0
+    if (archifyEnabled) {
+      const briefed = outline.filter((entry) => entry.diagram !== null)
+      const capped = briefed.slice(0, 3)
+      if (briefed.length > capped.length) log('warn', '本轮有 ' + briefed.length + ' 篇带图表简报，按上限只生成前 ' + capped.length + ' 张，其余可在文档页手动生成')
+      for (const entry of capped) {
+        const docId = docIdBySlug.get(slugify(entry.title))
+        if (!docId || !createdDocIds.has(docId)) continue
+        const doc = getDocument(db, docId)
+        if (!doc) continue
+        progress(93, '生成图表：' + entry.title)
+        const evidenceText = await readEvidenceFiles(root, [{ ...entry, evidence: entry.diagram!.sources }], knownPaths, limits.evidenceChars)
+        const generated = await generateDiagramForDoc(ctx, db, kb, { doc, type: entry.diagram!.type, sources: entry.diagram!.sources, workspaceRoot: root, evidenceText, taskId })
+        if (generated.ok) {
+          diagramsCreated += 1
+          log('info', '已为《' + entry.title + '》生成 ' + entry.diagram!.type + ' 图表并关联')
+        } else {
+          log('warn', '《' + entry.title + '》图表生成未完成：' + (generated.error ?? '未知错误') + '（不影响知识生成）')
+        }
+      }
     }
 
     // 5) 收尾：状态 + 项目清单
@@ -510,8 +574,8 @@ export async function runInitialize(deps: InitializeDeps): Promise<any> {
       }, null, 2) + '\n',
     )
     progress(100, '完成')
-    log('info', '初始化完成：候选文档 ' + created.length + ' 篇，冲突 ' + conflicts.length + ' 条，模型调用 ' + calls.length + ' 次' + (callFailures.length > 0 ? '，其中 ' + callFailures.length + ' 条线生成失败已跳过' : ''))
-    return { documents: created.length, conflicts: conflicts.length, files: index.fileCount, calls: calls.length, model: summary.model, purposes: calls.map((call) => call.purpose) }
+    log('info', '初始化完成：候选文档 ' + created.length + ' 篇，冲突 ' + conflicts.length + ' 条，模型调用 ' + executedPurposes.length + ' 次' + (callFailures.length > 0 ? '，其中 ' + callFailures.length + ' 条线生成失败已跳过' : ''))
+    return { documents: created.length, conflicts: conflicts.length, files: index.fileCount, calls: executedPurposes.length, model: summary.model, purposes: executedPurposes }
   } catch (error) {
     const code = error instanceof InitError ? error.code : 'INITIALIZE_FAILED'
     const message = errorMessage(error)

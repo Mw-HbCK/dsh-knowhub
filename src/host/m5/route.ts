@@ -73,6 +73,7 @@ export async function handleM5Request(route: RouteContext): Promise<boolean> {
         kbIds = [kbId]
       }
       const value = listDocumentsAcrossKbs(db(), kbIds, {
+        core: ['1', 'true', 'yes'].includes(str(url.searchParams.get('core')).toLowerCase()),
         kind: url.searchParams.get('kind'),
         status: url.searchParams.get('status'),
         verifyState: url.searchParams.get('verifyState'),

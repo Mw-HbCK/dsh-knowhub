@@ -27,6 +27,7 @@ import { all, get, run, type Db } from './db/db.js'
 import { createDocument, DOC_KINDS, DOC_STATUS, MAX_DOC_DEPTH, resolveParentId, VERIFY_STATES, type DocRow } from './search.js'
 import { recordReviewLog } from './review.js'
 import type { KbRow } from './kb/store.js'
+import { newId } from './utils/id.js'
 
 export class TransferError extends Error {
   code: string
@@ -102,7 +103,20 @@ export function exportKbMarkdown(db: Db, kb: KbRow): { filename: string; content
     ' kbName=' + JSON.stringify(kb.name) + ' scope=' + JSON.stringify(kb.scope) +
     ' exportedAt=' + JSON.stringify(exportedAt) + ' documentCount=' + docs.length + ' -->'
   const body = docs.map((doc) => renderDocMarkdown(doc)).join('\n')
-  const content = head + '\n\n# 知识库导出：' + kb.name + '\n\n' + body
+  let content = head + '\n\n# 知识库导出：' + kb.name + '\n\n' + body
+  // 图表关联随导出走（产物 HTML 本身在工作区 .archify/ 下，不进导出文件；导入后关联标记为已过时待重新生成）。
+  const diagramBlocks: string[] = []
+  for (const doc of docs) {
+    const rows = all(db, "SELECT * FROM doc_diagrams WHERE doc_id = ? AND status != 'superseded' ORDER BY created_at", [doc.id])
+    if (rows.length === 0) continue
+    const items = rows.map((row: any) => {
+      let sources: string[] = []
+      try { const parsed = JSON.parse(String(row.sources ?? '[]')); if (Array.isArray(parsed)) sources = parsed.map(String) } catch { /* ignore */ }
+      return { type: String(row.type), title: String(row.title ?? ''), candidatePath: String(row.candidate_path ?? ''), htmlPath: String(row.html_path ?? ''), sources, docVersion: Number(row.doc_version ?? 1), status: String(row.status) }
+    })
+    diagramBlocks.push('<!-- knowhub:diagrams\ndocId: ' + JSON.stringify(doc.id) + '\nitems: ' + JSON.stringify(items) + '\nnote: ' + JSON.stringify('图表产物位于原工作区 .archify/，导入后需重新生成') + '\n-->')
+  }
+  if (diagramBlocks.length > 0) content += '\n\n' + diagramBlocks.join('\n\n') + '\n'
   const stamp = exportedAt.slice(0, 10).replace(/-/g, '')
   const safeName = kb.name.replace(/[\s\/\\:*?"<>|]+/g, '-').slice(0, 60) || 'knowledge-base'
   return { filename: safeName + '-' + stamp + '.md', content, documentCount: docs.length, characters: content.length }
@@ -178,7 +192,8 @@ export async function importKbMarkdown(db: Db, storageRoot: string, kb: KbRow, i
   const content = typeof input.content === 'string' ? input.content : ''
   if (content.trim() === '') throw new TransferError('IMPORT_EMPTY', 400, '导入内容不能为空')
   if (content.length > IMPORT_MAX_CHARS) throw new TransferError('IMPORT_TOO_LARGE', 400, '导入内容超过 2MB 上限')
-  const docs = parseMarkdownExport(content)
+  const diagramImport = extractDiagramBlocks(content)
+  const docs = parseMarkdownExport(diagramImport.cleaned)
   if (docs.length > IMPORT_MAX_DOCS) throw new TransferError('IMPORT_TOO_MANY', 400, '单次最多导入 ' + IMPORT_MAX_DOCS + ' 篇知识（当前 ' + docs.length + ' 篇）')
   const actor = typeof input.actor === 'string' ? input.actor.trim().slice(0, 80) || null : null
   const result: ImportResult = { created: [], skipped: [], failed: [], parentLinked: 0, warnings: [] }
@@ -239,6 +254,22 @@ export async function importKbMarkdown(db: Db, storageRoot: string, kb: KbRow, i
     }
   }
 
+  // 图表关联回填：按导出 docId → 本次落库 id 映射；产物不在新工作区，统一标记 stale 待重新生成。
+  let diagramsImported = 0
+  for (const block of diagramImport.blocks) {
+    const targetId = idMap.get(block.docId)
+    if (!targetId) continue
+    for (const item of block.items) {
+      const now = Date.now()
+      run(db, 'INSERT INTO doc_diagrams (id, doc_id, kb_id, type, title, candidate_path, html_path, sources, doc_version, source_hash, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+        newId('dgm'), targetId, kb.id, String(item.type ?? 'architecture'), String(item.title ?? ''), String(item.candidatePath ?? ''), String(item.htmlPath ?? ''),
+        JSON.stringify(Array.isArray(item.sources) ? item.sources.map(String) : []), Number(item.docVersion ?? 1), '', 'stale', now, now,
+      ])
+      diagramsImported += 1
+    }
+  }
+  if (diagramsImported > 0) result.warnings.push('已导入 ' + diagramsImported + ' 条图表关联（产物位于原工作区，已标记为已过时，请在新工作区重新生成）')
+
   if (result.created.length > 0) {
     recordReviewLog(db, {
       action: 'doc_import', itemKind: 'kb', itemId: kb.id, docId: null, kbId: kb.id, actor,
@@ -246,4 +277,23 @@ export async function importKbMarkdown(db: Db, storageRoot: string, kb: KbRow, i
     })
   }
   return result
+}
+
+const DIAGRAM_BLOCK = /<!--\s*knowhub:diagrams\s*\r?\n([\s\S]*?)\r?\n-->/g
+
+/** 从导入内容中抽出图表关联块（并从正文里剔除，避免污染最后一篇文档的正文）。 */
+export function extractDiagramBlocks(content: string): { cleaned: string; blocks: Array<{ docId: string; items: any[] }> } {
+  const blocks: Array<{ docId: string; items: any[] }> = []
+  const cleaned = content.replace(DIAGRAM_BLOCK, (_whole, inner: string) => {
+    const meta = new Map<string, any>()
+    for (const line of String(inner).split(/\r?\n/)) {
+      const parsed = parseMetaLine(line)
+      if (parsed) meta.set(parsed.key, parsed.value)
+    }
+    const docId = typeof meta.get('docId') === 'string' ? meta.get('docId') : ''
+    const items = Array.isArray(meta.get('items')) ? meta.get('items') : []
+    if (docId !== '' && items.length > 0) blocks.push({ docId, items })
+    return ''
+  })
+  return { cleaned, blocks }
 }

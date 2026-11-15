@@ -50,6 +50,10 @@ const tests = [
   ['P2 父级/反馈/导出导入/备份预览', 'tests/p2.test.mjs'],
   ['知识库作用域（新建即可见）', 'tests/kb-scope.test.mjs'],
   ['模型输出截断重试', 'tests/model-output.test.mjs'],
+  ['Wiki 结构规划校验', 'tests/wiki-plan.test.mjs'],
+  ['核心记忆与退化护栏', 'tests/core-memory.test.mjs'],
+  ['知识质量规则检查', 'tests/quality.test.mjs'],
+  ['Archify 图表集成', 'tests/diagrams.test.mjs'],
   ['运行版本过期对比（C-3）', 'tests/version-check.test.mjs'],
   ['客户端交互', 'tests/ui-interaction.test.mjs'],
 ]

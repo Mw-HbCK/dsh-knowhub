@@ -66,6 +66,8 @@ export function buildOverview(db: Db, storageRoot: string, scopeKeys: string[]):
 }
 
 export interface DocumentFilterInput {
+  /** 核心记忆口径（Core Memory）：只看已批准、非 unverified 的 memory/preference。 */
+  core?: boolean
   kind?: string | null
   status?: string | null
   verifyState?: string | null
@@ -98,6 +100,11 @@ export function listDocumentsAcrossKbs(db: Db, kbIds: string[], input: DocumentF
     }
     where.push('d.status IN (' + statuses.map(() => '?').join(',') + ')')
     params.push(...statuses)
+  }
+  if (input.core) {
+    where.push("d.kind IN ('memory', 'preference')")
+    where.push("d.status = 'approved'")
+    where.push("d.verify_state != 'unverified'")
   }
   const verifyState = typeof input.verifyState === 'string' ? input.verifyState.trim() : ''
   if (verifyState !== '') {

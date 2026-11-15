@@ -218,6 +218,41 @@ await test('提炼：重复内容被去重跳过', async () => {
   assert.ok(result.skipped[0].reason.includes('待审核候选') || result.skipped[0].reason.includes('正式知识'))
 })
 
+await test('提炼解析：relation 与 targetTitle 被解析，非法 relation 归为 new', () => {
+  const parsed = distillLib.parseCandidates(JSON.stringify([
+    { title: '数据库升级到 8.4', kind: 'memory', body: '数据库已从 MySQL 8.0 升级到 8.4，连接配置不变，升级后需回归核心查询。', confidence: 0.9, evidence: [], relation: 'update', targetTitle: '数据库版本' },
+    { title: '缓存策略冲突', kind: 'decision', body: '新会话主张改用本地缓存，与已有决策结论矛盾，需要人工裁决哪一个为准。', confidence: 0.6, evidence: [], relation: 'conflict', targetTitle: '缓存策略' },
+    { title: '普通新条目', kind: 'todo', body: '状态：待处理\n补齐部署文档中的回滚章节，原因是当前文档缺少回滚步骤说明。', confidence: 0.7, evidence: [], relation: 'bogus' },
+  ]))
+  assert.equal(parsed.candidates.length, 3)
+  assert.equal(parsed.candidates[0].relation, 'update')
+  assert.equal(parsed.candidates[0].targetTitle, '数据库版本')
+  assert.equal(parsed.candidates[1].relation, 'conflict')
+  assert.equal(parsed.candidates[2].relation, 'new')
+  assert.equal(parsed.candidates[2].targetTitle, null)
+})
+
+await test('提炼：relation=update 生成更新候选而不是新建，relation=conflict 生成冲突审核项', async () => {
+  const existing = await search.createDocument(db, storageRoot, kbA, {
+    title: '数据库版本', kind: 'memory', body: '数据库使用 MySQL 8.0，部署在 B 节点，业务连接走内网地址。', tags: [], status: 'approved', verifyState: 'observed', confidence: 0.9,
+  })
+  fake.mode = 'ok'
+  fake.payload = [
+    { title: '数据库升级到 8.4', kind: 'memory', body: '数据库已从 MySQL 8.0 升级到 8.4，连接配置不变，升级完成后需要回归核心查询与备份任务。', confidence: 0.9, evidence: [], relation: 'update', targetTitle: '数据库版本' },
+    { title: '数据库版本争议', kind: 'memory', body: '另一处记录称数据库仍为 8.0 且未安排升级，与已确认的升级事实矛盾，需要人工确认当前版本。', confidence: 0.5, evidence: [], relation: 'conflict', targetTitle: '数据库版本' },
+  ]
+  const result = await distillLib.distillText(fakeCtx, db, { storageRoot }, { text: '会话确认数据库完成升级，同时另一处记录对版本有不同说法。'.repeat(6), scope: { workspaceId: 'ws-a-uuid' }, source: 'manual', actor: 'tester' })
+  assert.equal(result.status, 'success', JSON.stringify(result.error ?? ''))
+  assert.equal(result.created.length, 2)
+  const updateProposal = get(db, "SELECT * FROM proposals WHERE kb_id = ? AND kind = 'update' AND doc_id = ?", [kbA.id, existing.id])
+  assert.ok(updateProposal, '应为已有文档生成 update 候选')
+  assert.equal(updateProposal.status, 'pending')
+  const conflict = get(db, 'SELECT * FROM conflicts WHERE kb_id = ? AND doc_id = ?', [kbA.id, existing.id])
+  assert.ok(conflict, '应生成冲突审核项')
+  const docAfter = search.getDocument(db, existing.id)
+  assert.ok(docAfter.body.includes('MySQL 8.0'), '原文档不得被提炼直接覆盖')
+})
+
 await test('提炼：越权知识库被拒绝（KB_FORBIDDEN）', async () => {
   const result = await distillLib.distillText(fakeCtx, db, { storageRoot }, { text: '越权测试文本。'.repeat(30), kbId: kbB.id, scope: { workspaceId: 'ws-a-uuid' }, source: 'manual' })
   assert.equal(result.status, 'failed')

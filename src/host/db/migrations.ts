@@ -348,6 +348,29 @@ CREATE INDEX IF NOT EXISTS ix_doc_feedback_doc ON doc_feedback(doc_id, created_a
 CREATE INDEX IF NOT EXISTS ix_doc_feedback_kb ON doc_feedback(kb_id, created_at);
 `,
   },
+  {
+    version: 8,
+    name: '008-doc-diagrams',
+    sql: `
+CREATE TABLE IF NOT EXISTS doc_diagrams (
+  id             TEXT PRIMARY KEY,
+  doc_id         TEXT NOT NULL REFERENCES documents(id),
+  kb_id          TEXT NOT NULL,
+  type           TEXT NOT NULL,
+  title          TEXT NOT NULL DEFAULT '',
+  candidate_path TEXT NOT NULL DEFAULT '',
+  html_path      TEXT NOT NULL DEFAULT '',
+  sources        TEXT NOT NULL DEFAULT '[]',
+  doc_version    INTEGER NOT NULL DEFAULT 1,
+  source_hash    TEXT NOT NULL DEFAULT '',
+  status         TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current','stale','superseded','failed')),
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_doc_diagrams_doc ON doc_diagrams(doc_id, status);
+CREATE INDEX IF NOT EXISTS ix_doc_diagrams_kb ON doc_diagrams(kb_id, status);
+`,
+  },
 ]
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version
