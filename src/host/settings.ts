@@ -27,7 +27,13 @@ export const SETTING_KEY = {
   injectMaxTitles: 'knowhub.injectMaxTitles',
   injectIncludeUser: 'knowhub.injectIncludeUser',
   injectIncludeWorkspace: 'knowhub.injectIncludeWorkspace',
+  qualityModelCheck: 'knowhub.qualityModelCheck',
+  archifyAuto: 'knowhub.archifyAuto',
 } as const
+
+/** Archify 自动生成档位：off 全关 / quality 仅 quality 策略初始化时 / all 所有策略初始化时。 */
+export const ARCHIFY_AUTO_MODES = ['off', 'quality', 'all'] as const
+export type ArchifyAutoMode = (typeof ARCHIFY_AUTO_MODES)[number]
 
 export interface KnowhubSettings {
   defaultStrategy: Strategy
@@ -57,6 +63,10 @@ export interface KnowhubSettings {
   injectIncludeUser: boolean
   /** 是否把当前工作区知识纳入注入。 */
   injectIncludeWorkspace: boolean
+  /** 模型质检：默认关闭；开启后对初始化生成的较长 Wiki 额外做一次模型质量检查（只附问题清单，不拦截）。 */
+  qualityModelCheck: boolean
+  /** Archify 自动生成图表档位：默认 quality（仅 quality 策略初始化时按大纲简报生成）。 */
+  archifyAuto: ArchifyAutoMode
 }
 
 function defaultReviewerName(): string {
@@ -83,6 +93,8 @@ export const DEFAULT_SETTINGS: KnowhubSettings = {
   injectMaxTitles: 6,
   injectIncludeUser: true,
   injectIncludeWorkspace: true,
+  qualityModelCheck: false,
+  archifyAuto: 'quality',
 }
 
 export class SettingsError extends Error {
@@ -121,6 +133,8 @@ export function readSettings(db: Db): KnowhubSettings {
   const injectMaxTitles = readRaw(db, SETTING_KEY.injectMaxTitles)
   const injectIncludeUser = readRaw(db, SETTING_KEY.injectIncludeUser)
   const injectIncludeWorkspace = readRaw(db, SETTING_KEY.injectIncludeWorkspace)
+  const qualityModelCheck = readRaw(db, SETTING_KEY.qualityModelCheck)
+  const archifyAuto = readRaw(db, SETTING_KEY.archifyAuto)
   return {
     defaultStrategy: STRATEGIES.includes(strategy as Strategy) ? (strategy as Strategy) : DEFAULT_SETTINGS.defaultStrategy,
     autoDistill: typeof autoDistill === 'boolean' ? autoDistill : DEFAULT_SETTINGS.autoDistill,
@@ -136,6 +150,8 @@ export function readSettings(db: Db): KnowhubSettings {
     injectMaxTitles: Number.isInteger(injectMaxTitles) && (injectMaxTitles as number) >= 1 && (injectMaxTitles as number) <= 20 ? (injectMaxTitles as number) : DEFAULT_SETTINGS.injectMaxTitles,
     injectIncludeUser: typeof injectIncludeUser === 'boolean' ? injectIncludeUser : DEFAULT_SETTINGS.injectIncludeUser,
     injectIncludeWorkspace: typeof injectIncludeWorkspace === 'boolean' ? injectIncludeWorkspace : DEFAULT_SETTINGS.injectIncludeWorkspace,
+    qualityModelCheck: typeof qualityModelCheck === 'boolean' ? qualityModelCheck : DEFAULT_SETTINGS.qualityModelCheck,
+    archifyAuto: ARCHIFY_AUTO_MODES.includes(archifyAuto as ArchifyAutoMode) ? (archifyAuto as ArchifyAutoMode) : DEFAULT_SETTINGS.archifyAuto,
   }
 }
 
@@ -154,6 +170,8 @@ export interface SettingsPatch {
   injectMaxTitles?: unknown
   injectIncludeUser?: unknown
   injectIncludeWorkspace?: unknown
+  qualityModelCheck?: unknown
+  archifyAuto?: unknown
 }
 
 export function validateSettingsPatch(patch: SettingsPatch): Partial<KnowhubSettings> {
@@ -170,8 +188,9 @@ export function validateSettingsPatch(patch: SettingsPatch): Partial<KnowhubSett
     injectEnabled: '知识注入开关',
     injectIncludeUser: '全局记忆注入开关',
     injectIncludeWorkspace: '项目记忆注入开关',
+    qualityModelCheck: '模型质检开关',
   }
-  for (const key of ['autoDistill', 'autoBackup', 'autoApprove', 'injectEnabled', 'injectIncludeUser', 'injectIncludeWorkspace'] as const) {
+  for (const key of ['autoDistill', 'autoBackup', 'autoApprove', 'injectEnabled', 'injectIncludeUser', 'injectIncludeWorkspace', 'qualityModelCheck'] as const) {
     if (patch[key] === undefined) continue
     if (typeof patch[key] !== 'boolean') throw new SettingsError('SETTING_INVALID', 400, (booleanLabels[key] ?? key) + '必须是布尔值')
     out[key] = patch[key] as boolean
@@ -201,6 +220,11 @@ export function validateSettingsPatch(patch: SettingsPatch): Partial<KnowhubSett
     const value = Number(patch.injectMaxTitles)
     if (!Number.isInteger(value) || value < 1 || value > 20) throw new SettingsError('SETTING_INVALID', 400, '注入摘要标题数必须是 1–20 之间的整数')
     out.injectMaxTitles = value
+  }
+  if (patch.archifyAuto !== undefined) {
+    const value = String(patch.archifyAuto).trim()
+    if (!ARCHIFY_AUTO_MODES.includes(value as ArchifyAutoMode)) throw new SettingsError('SETTING_INVALID', 400, 'Archify 自动生成档位必须是 off / quality / all 之一')
+    out.archifyAuto = value as ArchifyAutoMode
   }
   if (patch.backupKeep !== undefined) {
     const value = Number(patch.backupKeep)

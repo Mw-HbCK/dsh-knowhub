@@ -16,23 +16,15 @@ import { all, get, openDatabase, run, type Db } from './db/db.js'
 import { listKnowledgeBases, type KbRow } from './kb/store.js'
 import { runModelCall } from './model.js'
 import { resolveStorageRoot } from './paths.js'
-import { createProposal, recordReviewLog } from './review.js'
-import { DOC_KINDS } from './search.js'
+import { createProposal, recordConflict, recordReviewLog } from './review.js'
+import { buildDistillSystem } from './pipeline/prompts/distill.js'
+import { runQualityChecks } from './pipeline/quality.js'
+import { DOC_KINDS, getDocument } from './search.js'
 import { resolveScope } from './scope.js'
 import { readSettings } from './settings.js'
 import { newId } from './utils/id.js'
 
-export const DISTILL_SYSTEM = [
-  '你是「知枢 KnowHub」的知识提炼器，从给定的会话/任务文本中提炼值得长期保存的项目知识。',
-  '只输出一个 JSON 数组，不要输出任何解释、Markdown 代码块或前后缀文字。',
-  '数组元素形状：{"title":"不超过 40 字的结论式标题","kind":"wiki|memory|decision|convention|issue|todo|preference","body":"2-6 句完整中文说明，包含事实与理由","confidence":0.0-1.0,"evidence":[{"kind":"session|file|task|url","ref":"来源标识"}]}。',
-  '规则：',
-  '1. 只提炼有长期价值的内容：已确认的技术选型与理由、项目约束与规范、已验证的实现方法、失败尝试及原因、关键决策、待办与未解决问题。',
-  '2. 寒暄、一次性临时细节、重复信息、无法验证的猜测不要提炼；证据不足时把 confidence 设低并在 body 中标注「待确认」。',
-  '3. 不得编造文件路径、命令、接口名；不知道就写「未记录」。',
-  '4. 不得输出任何密钥、令牌、口令、连接串。',
-  '5. 最多 6 条；没有可提炼内容时输出 []。',
-].join('\n')
+export const DISTILL_SYSTEM = buildDistillSystem()
 
 export class DistillError extends Error {
   code: string
@@ -86,6 +78,9 @@ export interface DistillCandidate {
   body: string
   confidence: number
   evidence: { kind: string; ref: string }[]
+  /** 与已有知识的关系（W2）：new 新建 / update 同主题新版本 / conflict 结论冲突。缺失时按 new 处理（向后兼容）。 */
+  relation: 'new' | 'update' | 'conflict'
+  targetTitle: string | null
 }
 
 /** 清洗疑似密钥与绝对路径（宁可少留，也不把敏感信息带进知识库）。 */
@@ -139,7 +134,10 @@ export function parseCandidates(text: string): ParsedCandidates {
         evidence.push({ kind: ['file', 'session', 'task', 'url'].includes(kind) ? kind : 'session', ref: ref.slice(0, 300) })
       }
     }
-    candidates.push({ title, kind, body, confidence, evidence })
+    const relationRaw = str(record.relation)
+    const relation = relationRaw === 'update' || relationRaw === 'conflict' ? relationRaw : 'new'
+    const targetTitle = relation === 'new' ? null : (sanitizeDistilledText(str(record.targetTitle)).slice(0, 80) || null)
+    candidates.push({ title, kind, body, confidence, evidence, relation, targetTitle })
     if (candidates.length >= 6) break
   }
   return { candidates, rejected, error: null }
@@ -212,6 +210,22 @@ function findDuplicate(db: Db, kbId: string, candidate: DistillCandidate): strin
   return null
 }
 
+/**
+ * 已有知识清单：给提炼模型判断 relation 用（同主题 → update、矛盾 → conflict、重复 → 不输出）。
+ * 只取标题/类型/正文摘要且总量受限，memory/preference 优先；同时返回标题 → 文档行映射供落库时定位目标。
+ */
+function existingDocsContext(db: Db, kbId: string): { text: string; byTitle: Map<string, any> } {
+  const rows = all<any>(db, "SELECT id, title, kind, body FROM documents WHERE kb_id = ? AND deleted_at IS NULL ORDER BY CASE WHEN kind IN ('memory', 'preference') THEN 0 ELSE 1 END, updated_at DESC LIMIT 30", [kbId])
+  const byTitle = new Map<string, any>()
+  for (const row of rows) {
+    const title = String(row.title ?? '')
+    if (title !== '' && !byTitle.has(title)) byTitle.set(title, row)
+  }
+  if (rows.length === 0) return { text: '', byTitle }
+  const lines = rows.map((row) => '- 《' + String(row.title ?? '') + '》（' + String(row.kind ?? '') + '）：' + String(row.body ?? '').replace(/\s+/g, ' ').slice(0, 200))
+  return { text: ['当前知识库已有知识（判断 relation 时逐条比对；targetTitle 必须与这里的标题完全一致）：', ...lines].join('\n'), byTitle }
+}
+
 function recordRun(db: Db, input: { id: string; kbId: string | null; workspaceId: string | null; source: string; status: string; created: number; skipped: number; provider: string | null; model: string | null; note: string | null }): void {
   run(db, 'INSERT INTO distill_runs (id, kb_id, workspace_id, source, status, created_count, skipped_count, model_provider, model_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
     input.id, input.kbId, input.workspaceId, input.source, input.status, input.created, input.skipped, input.provider, input.model, input.note, Date.now(),
@@ -262,7 +276,12 @@ export async function distillText(ctx: any, db: Db, config: any, input: DistillI
   base.knowledgeBaseId = kb.id
   base.model = { provider: kb.modelProvider, model: kb.modelId }
 
-  const prompt = ['请从下面的会话/任务文本中提炼长期知识：', '-----', text.slice(0, 12000), '-----', '再次强调：只输出 JSON 数组。'].join('\n')
+  const existing = existingDocsContext(db, kb.id)
+  const prompt = [
+    '请从下面的会话/任务文本中提炼长期知识：',
+    ...(existing.text !== '' ? [existing.text, ''] : []),
+    '-----', text.slice(0, 12000), '-----', '再次强调：只输出 JSON 数组。',
+  ].join('\n')
   let call: any
   try {
     call = await runModelCall(ctx, {
@@ -294,7 +313,33 @@ export async function distillText(ctx: any, db: Db, config: any, input: DistillI
   for (const candidate of parsed.candidates) {
     const duplicate = findDuplicate(db, kb.id, candidate)
     if (duplicate) { skipped.push({ title: candidate.title, reason: duplicate }); continue }
+    const target = candidate.relation !== 'new' && candidate.targetTitle !== null ? existing.byTitle.get(candidate.targetTitle) : undefined
+    const qualityFlags = runQualityChecks({ title: candidate.title, kind: candidate.kind, body: candidate.body, sources: candidate.evidence.map((item) => item.ref) })
+    const qualityNote = qualityFlags.length > 0 ? '｜质检提示：' + qualityFlags.join('；') : ''
     try {
+      if (candidate.relation === 'update' && target) {
+        const proposal = createProposal(db, kb, {
+          kind: 'update',
+          docId: String(target.id),
+          body: candidate.body,
+          verifyState: 'inferred',
+          confidence: candidate.confidence,
+          sources: candidate.evidence,
+          source: 'distill:' + str(input.source),
+          reason: '自动提炼：与已有知识《' + String(target.title) + '》同主题的新版本，生成更新候选（不直接覆盖）' + qualityNote,
+          createdBy: input.actor ?? 'pipeline:distill',
+        })
+        created.push({ proposalId: proposal.id, title: proposal.title ?? String(target.title), kind: candidate.kind, confidence: candidate.confidence })
+        continue
+      }
+      if (candidate.relation === 'conflict' && target) {
+        const doc = getDocument(db, String(target.id))
+        if (doc) {
+          const conflict = recordConflict(db, { kbId: kb.id, doc, proposedBody: candidate.body, proposedTitle: candidate.title, source: 'distill:' + str(input.source) })
+          created.push({ proposalId: conflict.id, title: candidate.title, kind: candidate.kind, confidence: candidate.confidence })
+          continue
+        }
+      }
       const proposal = createProposal(db, kb, {
         kind: 'create',
         docKind: candidate.kind,
@@ -305,7 +350,7 @@ export async function distillText(ctx: any, db: Db, config: any, input: DistillI
         confidence: candidate.confidence,
         sources: candidate.evidence,
         source: 'distill:' + str(input.source),
-        reason: '自动提炼自 ' + str(input.source) + (input.actor ? ' / ' + input.actor : ''),
+        reason: '自动提炼自 ' + str(input.source) + (input.actor ? ' / ' + input.actor : '') + qualityNote,
         createdBy: input.actor ?? 'pipeline:distill',
       })
       created.push({ proposalId: proposal.id, title: proposal.title ?? candidate.title, kind: candidate.kind, confidence: candidate.confidence })

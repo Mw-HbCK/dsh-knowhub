@@ -15,6 +15,8 @@ import {
 import { countDocumentList, countDocuments, createDocument, DocError, getDocument, listDocuments, resolveParentId, searchDocuments } from '../search.js'
 import { addFeedback, FeedbackError, feedbackSummary, feedbackSummaries } from '../feedback.js'
 import { exportKbMarkdown, importKbMarkdown, renderDocMarkdown, TransferError } from '../transfer.js'
+import { deleteDiagramAssociation, getDiagram, listDocDiagrams, resolveDiagramHtmlAbs, startDiagramTask } from '../pipeline/diagrams.js'
+import { promises as fsPromises } from 'node:fs'
 import { run } from '../db/db.js'
 import { readModelCatalog } from '../model.js'
 import { listWorkspaces, resolveWorkspace } from '../workspace.js'
@@ -435,6 +437,7 @@ export async function handleKbRequest(request: KbRequest): Promise<boolean> {
       const parent = doc.parentId === null ? null : getDocument(db(), doc.parentId)
       writeOk(res, {
         document: doc, sources, versions,
+        diagrams: listDocDiagrams(db(), docId),
         feedback: feedbackSummary(db(), docId),
         parent: parent === null ? null : { id: parent.id, title: parent.title, kind: parent.kind },
         children: children.map((child) => ({ id: child.id, title: child.title, kind: child.kind, status: child.status })),
@@ -499,6 +502,57 @@ export async function handleKbRequest(request: KbRequest): Promise<boolean> {
         summary: feedbackSummary(db(), docId),
         message: created.helpful ? '已记录：这条知识有帮助' : '已记录：这条知识没帮上忙',
       })
+      return true
+    }
+
+    // 生成图表（手动/重新生成）：异步任务，产物走 Archify 校验与交付流程。
+    const docDiagrams = /^\/kb\/([^/]+)\/docs\/([^/]+)\/diagrams$/.exec(path)
+    if (docDiagrams && method === 'POST') {
+      const kbId = decodeURIComponent(docDiagrams[1] ?? '')
+      const docId = decodeURIComponent(docDiagrams[2] ?? '')
+      const row = getKnowledgeBase(db(), kbId)
+      const doc = getDocument(db(), docId)
+      if (!row) { writeError(res, 404, 'KB_NOT_FOUND', '知识库不存在：' + kbId); return true }
+      if (!doc || doc.kbId !== kbId) { writeError(res, 404, 'DOC_NOT_FOUND', '知识不存在：' + docId); return true }
+      if (!row.modelProvider || !row.modelId) { writeError(res, 400, 'NO_MODEL_CONFIGURED', '知识库未绑定模型，无法生成图表'); return true }
+      const body = (await readBody(req)) ?? {}
+      const started = startDiagramTask({
+        ctx, db: db(), storageRoot: resolveStorageRoot(config), kb: row, docId,
+        type: typeof body.type === 'string' ? body.type : null,
+        diagramId: typeof body.diagramId === 'string' ? body.diagramId : null,
+        workspaceId: typeof body.workspaceId === 'string' ? body.workspaceId : null,
+      })
+      writeOk(res, { task: started.task, duplicate: started.duplicate, message: started.duplicate ? '该文档已有图表生成任务在进行中' : '图表生成任务已启动，完成后自动关联到本文档' })
+      return true
+    }
+
+    // 删除图表关联（只删关联，产物文件保留在工作区 .archify/ 下）。
+    const docDiagramItem = /^\/kb\/([^/]+)\/docs\/([^/]+)\/diagrams\/([^/]+)$/.exec(path)
+    if (docDiagramItem && method === 'DELETE') {
+      const kbId = decodeURIComponent(docDiagramItem[1] ?? '')
+      const docId = decodeURIComponent(docDiagramItem[2] ?? '')
+      const diagramId = decodeURIComponent(docDiagramItem[3] ?? '')
+      const diagram = getDiagram(db(), diagramId)
+      if (!diagram || diagram.docId !== docId || diagram.kbId !== kbId) { writeError(res, 404, 'DIAGRAM_NOT_FOUND', '图表关联不存在：' + diagramId); return true }
+      deleteDiagramAssociation(db(), diagramId)
+      writeOk(res, { deleted: true, message: '已删除图表关联（产物文件仍保留在工作区 .archify/ 目录下）' })
+      return true
+    }
+
+    // 查看图表 HTML：按关联记录回工作区读取产物，路径必须落在工作区内。
+    const diagramHtml = /^\/diagrams\/([^/]+)\/html$/.exec(path)
+    if (diagramHtml && method === 'GET') {
+      const diagramId = decodeURIComponent(diagramHtml[1] ?? '')
+      const diagram = getDiagram(db(), diagramId)
+      if (!diagram) { writeError(res, 404, 'DIAGRAM_NOT_FOUND', '图表不存在：' + diagramId); return true }
+      const abs = await resolveDiagramHtmlAbs(ctx, db(), diagram)
+      if (abs === null) { writeError(res, 404, 'DIAGRAM_FILE_UNAVAILABLE', '图表产物不在当前工作区（可能来自导入或工作区已移动），请重新生成'); return true }
+      try {
+        const html = await fsPromises.readFile(abs, 'utf8')
+        writeText(res, 200, html, 'text/html; charset=utf-8')
+      } catch {
+        writeError(res, 404, 'DIAGRAM_FILE_UNAVAILABLE', '图表产物文件不存在，请重新生成')
+      }
       return true
     }
 

@@ -24,6 +24,8 @@ const KINDS: Array<{ value: string; label: string }> = [
 ]
 const KIND_LABEL: Record<string, string> = Object.fromEntries(KINDS.map((item) => [item.value, item.label]))
 
+const DIAGRAM_TYPE_LABEL: Record<string, string> = { architecture: '系统架构图', workflow: '工作流程图', sequence: '时序图', dataflow: '数据流图', lifecycle: '生命周期图', erd: '实体关系图', tree: '树形结构图', class: '类图', timeline: '时间线图', waterfall: '瀑布图' }
+
 const STRATEGIES: Array<{ value: string; label: string; desc: string }> = [
   { value: 'economy', label: '经济模式', desc: '优先增量扫描、复用缓存，只在必要时调用模型；适合预算敏感、更新频繁的仓库。' },
   { value: 'balanced', label: '均衡模式', desc: '关键模块做必要深入分析，普通文件增量处理；默认推荐。' },
@@ -2869,6 +2871,7 @@ function DocsExplorer(props: any): any {
   const [query, setQuery] = R.useState('')
   const [status, setStatus] = R.useState('')
   const [kind, setKind] = R.useState('')
+  const [coreOnly, setCoreOnly] = R.useState(false)
   const [data, setData] = R.useState(null)
   const [loading, setLoading] = R.useState(false)
   const [error, setError] = R.useState(null)
@@ -2888,6 +2891,8 @@ function DocsExplorer(props: any): any {
   const [feedbackBusy, setFeedbackBusy] = R.useState(false)
   const [feedbackReason, setFeedbackReason] = R.useState('')
   const [parentPick, setParentPick] = R.useState('')
+  const [diagramType, setDiagramType] = R.useState('architecture')
+  const [diagramBusy, setDiagramBusy] = R.useState(false)
   const PAGE_SIZE = 50
 
   // 类型与状态都在宿主侧筛选（支持逗号多值），这样总数统计与分页都是真实的。
@@ -2900,6 +2905,7 @@ function DocsExplorer(props: any): any {
     const kinds = kind === '' ? conf.kinds : [kind]
     parts.push('kind=' + encodeURIComponent(kinds.join(',')))
     parts.push('status=' + encodeURIComponent(status === '' ? 'draft,approved,stale' : status))
+    if (coreOnly) parts.push('core=1')
     return parts.join('&')
   }
   const fetchList = async (searchText?: string) => {
@@ -2926,7 +2932,7 @@ function DocsExplorer(props: any): any {
       setLoadingMore(false)
     }
   }
-  R.useEffect(() => { void fetchList('') }, [mode, status, kind])
+  R.useEffect(() => { void fetchList('') }, [mode, status, kind, coreOnly])
 
   const openDetail = async (doc: any) => {
     setSelectedId(doc.id); setDetail(null); setDetailError(null); setEditing(false); setVersionPane(null)
@@ -3090,6 +3096,33 @@ function DocsExplorer(props: any): any {
       setBusy(false)
     }
   }
+  const generateDiagram = async (regen?: any) => {
+    if (detail === null || detail.document === undefined) return
+    setDiagramBusy(true); setDetailError(null)
+    try {
+      const value = await request('/kb/' + encodeURIComponent(detail.document.kbId) + '/docs/' + encodeURIComponent(detail.document.id) + '/diagrams', {
+        method: 'POST', body: regen ? { diagramId: regen.id } : { type: diagramType },
+      })
+      setNotice(value.message ?? '图表生成任务已启动，完成后刷新详情即可看到')
+    } catch (failure: any) {
+      setDetailError(message(failure))
+    } finally {
+      setDiagramBusy(false)
+    }
+  }
+  const deleteDiagram = async (diagram: any) => {
+    if (detail === null || detail.document === undefined) return
+    setDiagramBusy(true); setDetailError(null)
+    try {
+      await request('/kb/' + encodeURIComponent(detail.document.kbId) + '/docs/' + encodeURIComponent(detail.document.id) + '/diagrams/' + encodeURIComponent(diagram.id), { method: 'DELETE' })
+      setNotice('已删除图表关联')
+      await openDetail(detail.document)
+    } catch (failure: any) {
+      setDetailError(message(failure))
+    } finally {
+      setDiagramBusy(false)
+    }
+  }
   const statusChips: Array<[string, string]> = [['', '全部'], ['approved', '已批准'], ['draft', '待审核'], ['stale', '已过时']]
   const kindChips: Array<[string, string]> = conf.showKinds
     ? [['', '全部类型'] as [string, string]].concat(conf.kinds.map((value: string) => [value, KIND_LABEL[value] ?? value] as [string, string]))
@@ -3115,6 +3148,10 @@ function DocsExplorer(props: any): any {
         key: 'kind-' + value, type: 'button', style: kind === value ? styles.chipActive : styles.chip,
         onClick: () => setKind(value),
       }, label))) : null,
+      mode === 'memory' ? h('div', { style: styles.chipRow }, h('button', {
+        key: 'core-only', type: 'button', style: coreOnly ? styles.chipActive : styles.chip,
+        onClick: () => setCoreOnly(!coreOnly),
+      }, '核心记忆（已批准 · 已验证）')) : null,
       error !== null ? h('div', { style: { ...styles.error, margin: '4px 8px 8px' } }, error) : null,
       h('div', { style: { ...styles.hint, padding: '0 12px 8px' } },
         '共 ' + totalCount + ' 条，已显示 ' + rows.length + ' 条' + (totalCount > rows.length ? '（每页 ' + PAGE_SIZE + ' 条）' : '')),
@@ -3240,6 +3277,30 @@ function DocsExplorer(props: any): any {
                 h('button', { type: 'button', style: { ...styles.button, ...(feedbackBusy ? styles.buttonDisabled : {}) }, className: 'kh-hover', disabled: feedbackBusy, onClick: () => void sendFeedback(false) }, '没帮上忙'),
               ),
               h('div', { style: styles.divider }),
+              h('div', { style: styles.sectionTitle }, '关联图表（' + (detail.diagrams ?? []).filter((item: any) => item.status !== 'superseded').length + '）'),
+              (detail.diagrams ?? []).filter((item: any) => item.status !== 'superseded').length === 0
+                ? h('div', { style: styles.hint }, '暂无关联图表。可在下方手动生成；初始化为 quality 策略时也会按 Wiki 大纲的图表简报自动生成。')
+                : null,
+              ...(detail.diagrams ?? []).filter((item: any) => item.status !== 'superseded').map((diagram: any) => h('div', { key: diagram.id, style: { ...styles.card, padding: '8px 10px', marginBottom: '8px' } },
+                h('div', { style: styles.meta },
+                  h(Badge, { text: DIAGRAM_TYPE_LABEL[diagram.type] ?? diagram.type }),
+                  diagram.status === 'current' ? h(Badge, { text: '当前', style: styles.badgeGreen }) : diagram.status === 'stale' ? h(Badge, { text: '已过时（来源已变更）', style: styles.badgeAmber }) : h(Badge, { text: diagram.status, style: styles.badgeAmber }),
+                  h('span', null, '生成于 ' + formatTime(new Date(diagram.createdAt).toISOString())),
+                  h('span', null, '依据文档第 ' + diagram.docVersion + ' 版 · 来源 ' + (diagram.sources ?? []).length + ' 个文件'),
+                ),
+                h('div', { style: { ...styles.row, marginTop: '6px' } },
+                  h('a', { href: '/knowhub/api/diagrams/' + encodeURIComponent(diagram.id) + '/html', target: '_blank', rel: 'noreferrer', style: styles.button, className: 'kh-hover' }, '查看图表'),
+                  h('button', { type: 'button', style: styles.button, className: 'kh-hover', disabled: diagramBusy, onClick: () => void generateDiagram(diagram) }, '重新生成'),
+                  h('button', { type: 'button', style: styles.button, className: 'kh-hover', disabled: diagramBusy, onClick: () => void deleteDiagram(diagram) }, '删除关联'),
+                ),
+              )),
+              h('div', { style: { ...styles.row, marginTop: '4px' } },
+                h('select', { style: { ...styles.input, width: '170px' }, value: diagramType, onChange: (event: any) => setDiagramType(event.target.value) },
+                  Object.keys(DIAGRAM_TYPE_LABEL).map((key) => h('option', { key, value: key }, DIAGRAM_TYPE_LABEL[key]))),
+                h('button', { type: 'button', style: styles.button, className: 'kh-hover', disabled: diagramBusy, onClick: () => void generateDiagram() }, diagramBusy ? '提交中…' : '生成图表'),
+                h('span', { style: styles.hint }, '生成走 Archify 校验与交付流程，失败不会影响知识本身'),
+              ),
+              h('div', { style: styles.divider }),
               h('div', { style: styles.sectionTitle }, '来源（' + (detail.sources ?? []).length + '）'),
               (detail.sources ?? []).length === 0
                 ? h('div', { style: styles.hint }, '该知识没有登记来源')
@@ -3340,6 +3401,8 @@ function SettingsView(): any {
       autoDistill: form.autoDistill === true,
       autoBackup: form.autoBackup === true,
       autoApprove: form.autoApprove === true,
+      qualityModelCheck: form.qualityModelCheck === true,
+      archifyAuto: String(form.archifyAuto ?? 'quality'),
       autoApproveMaxDiffLines: Number(form.autoApproveMaxDiffLines),
       injectEnabled: form.injectEnabled === true,
       injectIncludeUser: form.injectIncludeUser === true,
@@ -3455,6 +3518,18 @@ function SettingsView(): any {
         h('div', { style: { ...styles.field, flex: '1 1 160px' } }, h('label', { style: styles.label }, '自动批准最大差异行数（1–200）'), h('input', { type: 'number', style: styles.input, value: form.autoApproveMaxDiffLines ?? 10, onChange: (event: any) => patch({ autoApproveMaxDiffLines: event.target.value }) })),
       ),
       checkbox('autoApprove', '开启自动批准（默认关闭，仅低风险 Wiki 更新）', '只对「已批准 Wiki 的更新候选」生效：基线版本未变、差异行数不超过阈值时自动落库，并写入审核日志标记 auto_approve；其他类型仍必须人工审核。'),
+      checkbox('qualityModelCheck', '开启模型质检（默认关闭）', '初始化生成较长 Wiki 时额外调用一次模型做质量检查，问题清单附在草稿的「质检提示」段中，仅供审核参考，不拦截、不改写。规则质检（套话、重复、来源一致性）始终开启且不消耗模型调用。'),
+      h('div', { style: styles.row },
+        h('div', { style: { ...styles.field, flex: '1 1 220px' } },
+          h('label', { style: styles.label }, 'Archify 自动生成图表'),
+          h('select', { style: styles.input, value: String(form.archifyAuto ?? 'quality'), onChange: (event: any) => patch({ archifyAuto: event.target.value }) },
+            h('option', { value: 'off' }, '关闭（只保留手动用技能生成）'),
+            h('option', { value: 'quality' }, '仅 quality 策略初始化时（默认）'),
+            h('option', { value: 'all' }, '所有策略初始化时'),
+          ),
+          h('div', { style: styles.hint }, '初始化时按 Wiki 大纲的图表简报自动生成架构/流程等图表并关联到对应文档；图表走 Archify 自身的校验与交付流程，失败不影响知识生成。'),
+        ),
+      ),
       h('div', { style: styles.field },
         h('label', { style: styles.label }, '额外排除目录（每行一个或逗号分隔，仅目录名）'),
         h('textarea', { style: styles.textarea, value: form.excludeDirsText ?? '', onChange: (event: any) => patch({ excludeDirsText: event.target.value }), placeholder: '例如：vendor\nthird_party' }),

@@ -11,7 +11,7 @@
  */
 import { promises as fs } from 'node:fs'
 import { resolve, sep } from 'node:path'
-import { run, type Db } from '../db/db.js'
+import { all, run, type Db } from '../db/db.js'
 import { type KbRow } from '../kb/store.js'
 import { getDocument, listDocuments, type DocRow } from '../search.js'
 import { appendVersion, diffLines } from '../docvers.js'
@@ -27,6 +27,9 @@ import {
   readGitStateRow, recordFileChanges, saveGitState, type FileChange, type GitStateRow,
 } from './changes.js'
 import { sanitizeModelText } from './initialize.js'
+import { buildWikiUpdateSystem } from './prompts/wiki-update.js'
+import { runQualityChecks } from './quality.js'
+import { markStaleDiagramsForChanges } from './diagrams.js'
 import { createTask, runTask, type TaskRow } from '../tasks.js'
 import { newId } from '../utils/id.js'
 import { errorMessage } from '../http.js'
@@ -40,24 +43,12 @@ export class IncrementalError extends Error {
 }
 
 const LIMITS = {
-  economy: { maxFiles: 12000, maxHashes: 1500, maxDocs: 2, maxTokens: 10000, maxSnippetFiles: 4, maxSnippetChars: 4000 },
-  balanced: { maxFiles: 20000, maxHashes: 3000, maxDocs: 4, maxTokens: 20000, maxSnippetFiles: 6, maxSnippetChars: 6000 },
-  quality: { maxFiles: 30000, maxHashes: 6000, maxDocs: 7, maxTokens: 50000, maxSnippetFiles: 8, maxSnippetChars: 8000 },
+  economy: { maxFiles: 12000, maxHashes: 1500, maxDocs: 2, maxTokens: 10000, maxSnippetFiles: 4, maxSnippetChars: 4000, maxBodyChars: 2400, maxDocChars: 6000 },
+  balanced: { maxFiles: 20000, maxHashes: 3000, maxDocs: 4, maxTokens: 20000, maxSnippetFiles: 6, maxSnippetChars: 6000, maxBodyChars: 4000, maxDocChars: 8000 },
+  quality: { maxFiles: 30000, maxHashes: 6000, maxDocs: 7, maxTokens: 50000, maxSnippetFiles: 8, maxSnippetChars: 8000, maxBodyChars: 6000, maxDocChars: 12000 },
 } as const
 
 type Strategy = keyof typeof LIMITS
-
-const UPDATE_SYSTEM = [
-  '你是知枢 KnowHub 的 Repo Wiki 维护助手。',
-  '任务：根据「代码变更」和「现有文档」，给出该文档更新后的完整正文。',
-  '规则：',
-  '1. 只依据提供的证据，不臆测；无法确认的内容放进 uncertain 数组，不要写进正文当事实。',
-  '2. 不要编造文件、模块、命令或不存在的接口。',
-  '3. 保留原有正确内容，只修改与本次变更相关的部分。',
-  '4. 正文使用简体中文 Markdown，不超过 1600 字。',
-  '5. 只输出一个 JSON 对象，不要输出其它文字。',
-  '输出格式：{"document":{"title":"文档标题","body":"Markdown 正文","changeSummary":"一句话变更摘要","uncertain":["待确认项"]}}',
-].join('\n')
 
 function limitsFor(strategy: string): (typeof LIMITS)[Strategy] {
   return strategy === 'quality' ? LIMITS.quality : strategy === 'balanced' ? LIMITS.balanced : LIMITS.economy
@@ -123,6 +114,26 @@ export function parseUpdatePayload(text: string, secrets: { root: string; storag
     changeSummary: typeof document.changeSummary === 'string' ? sanitizeModelText(document.changeSummary, secrets).text.slice(0, 300) : '',
     uncertain,
   }
+}
+
+
+/**
+ * 退化护栏：整篇重写最容易把长文档越改越薄。新正文相对原文出现以下任一情况视为疑似退化，
+ * 调用方应降级为「重新检查」标记而不是生成更新候选：
+ * - 原文较长（≥400 字）且新正文不足原文 60%；
+ * - 原文有 ≥2 个小标题且新正文丢掉了一半以上。
+ */
+export function assessDegradation(originalBody: string, nextBody: string): string | null {
+  const original = String(originalBody ?? '')
+  const next = String(nextBody ?? '')
+  if (original.length >= 400 && next.length < original.length * 0.6) {
+    return '新正文长度 ' + next.length + ' 不足原文 ' + original.length + ' 的 60%'
+  }
+  const countHeadings = (text: string): number => text.split('\n').filter((line) => /^#{1,6}\s/.test(line)).length
+  const before = countHeadings(original)
+  const after = countHeadings(next)
+  if (before >= 2 && after * 2 < before) return '小标题从 ' + before + ' 个减少到 ' + after + ' 个'
+  return null
 }
 
 function normalizeBody(text: string): string {
@@ -316,6 +327,7 @@ function buildUpdatePrompt(input: {
   snippets: Array<{ path: string; text: string }>
   scan: ProjectIndex
   mode: string
+  maxDocChars: number
 }): string {
   const lines: string[] = []
   lines.push('## 项目概况')
@@ -336,7 +348,7 @@ function buildUpdatePrompt(input: {
   lines.push('## 现有文档（第 ' + input.doc.currentVersion + ' 版，状态 ' + input.doc.status + '）')
   lines.push('标题：' + input.doc.title)
   lines.push('正文：')
-  lines.push(input.doc.body.slice(0, 6000))
+  lines.push(input.doc.body.slice(0, input.maxDocChars))
   lines.push('')
   lines.push('## 要求')
   lines.push('只输出 JSON：{"document":{"title":"…","body":"…","changeSummary":"…","uncertain":["…"]}}。')
@@ -390,12 +402,28 @@ export async function runIncremental(input: IncrementalInput): Promise<any> {
   }
 
   recordFileChanges(db, kb.id, taskId, analysis.mode, analysis.changes)
+  // 图表过时判定：来源文件变了的关联图表标记 stale（只标记，不自动重新生成）。
+  if (analysis.changes.length > 0) {
+    const staleDiagrams = markStaleDiagramsForChanges(db, kb.id, analysis.changes.map((change) => change.path))
+    if (staleDiagrams > 0) log('info', '已标记 ' + staleDiagrams + ' 张关联图表为已过时（来源文件变更，可在文档页重新生成）')
+  }
   log('info', '检测到 ' + analysis.changes.length + ' 个文件变化（模式：' + (analysis.mode === 'git' ? 'Git' : '内容哈希') + '，新增 ' + analysis.changes.filter((change) => change.change === 'added').length + ' / 修改 ' + analysis.changes.filter((change) => change.change === 'modified').length + ' / 删除 ' + analysis.changes.filter((change) => change.change === 'deleted').length + '）')
   if (analysis.structural.length > 0) log('warn', '检测到结构性文件变更（' + analysis.structural.slice(0, 6).join('、') + '）：相关 Wiki 将标记为需要重新检查')
 
   if (analysis.recheckDocs.length > 0) {
     summary.recheckFlagged = flagRecheck(db, kb.id, analysis.recheckDocs.map((doc) => doc.docId), '结构性文件变更：' + analysis.structural.slice(0, 8).join('、'), taskId)
     log('info', '已标记 ' + summary.recheckFlagged + ' 篇 Wiki 需要人工重新检查（不会自动重写）')
+  }
+
+  // 核心记忆的来源文件变更：不自动重写记忆正文，只打重新检查标记，交人工判断是否过时。
+  if (analysis.changes.length > 0) {
+    const changedPaths = analysis.changes.map((change) => change.path)
+    const memoryHits = all(db, "SELECT DISTINCT d.id AS id FROM documents d JOIN sources s ON s.doc_id = d.id WHERE d.kb_id = ? AND d.deleted_at IS NULL AND d.kind IN ('memory', 'preference') AND s.kind = 'file' AND s.ref IN (" + changedPaths.map(() => '?').join(', ') + ')', [kb.id, ...changedPaths])
+    if (memoryHits.length > 0) {
+      const flagged = flagRecheck(db, kb.id, memoryHits.map((row: any) => String(row.id)), '核心记忆的来源文件发生变更：' + changedPaths.slice(0, 6).join('、'), taskId)
+      summary.recheckFlagged += flagged
+      log('info', '已标记 ' + flagged + ' 条核心记忆需要重新检查（来源文件变更，不自动重写记忆）')
+    }
   }
 
   if (analysis.changes.length === 0) {
@@ -457,7 +485,7 @@ export async function runIncremental(input: IncrementalInput): Promise<any> {
     }
 
     const snippets = await collectSnippets(analysis.root, deltaChanges.filter((change) => change.change !== 'deleted').map((change) => change.path), analysis.limits)
-    const prompt = buildUpdatePrompt({ doc, changes: deltaChanges, snippets, scan: analysis.scan, mode: analysis.mode })
+    const prompt = buildUpdatePrompt({ doc, changes: deltaChanges, snippets, scan: analysis.scan, mode: analysis.mode, maxDocChars: analysis.limits.maxDocChars })
     // 推理模型可能把 token 预算耗在思考上导致输出被截断：识别出来并加倍预算重试一次。
     let budget: number = analysis.limits.maxTokens
     let parsed: ReturnType<typeof parseUpdatePayload> = null
@@ -469,7 +497,7 @@ export async function runIncremental(input: IncrementalInput): Promise<any> {
         result = await runModelCall(input.ctx, {
           provider: kb.modelProvider ?? '',
           model: kb.modelId ?? '',
-          system: UPDATE_SYSTEM,
+          system: buildWikiUpdateSystem(analysis.limits.maxBodyChars),
           prompt,
           maxTokens: budget,
           temperature: 0.2,
@@ -516,7 +544,15 @@ export async function runIncremental(input: IncrementalInput): Promise<any> {
       log('info', '文档「' + doc.title + '」内容无实质变化（差异行 ' + changedLines + '），跳过')
       continue
     }
-    const reason = '增量更新：' + deltaChanges.slice(0, 6).map((change) => change.change + ' ' + change.path).join('、')
+    const degradation = assessDegradation(doc.body, parsed.body)
+    if (degradation !== null) {
+      const flagged = flagRecheck(db, kb.id, [doc.id], '增量更新产出疑似退化（' + degradation + '），已放弃本次自动更新，请人工检查', taskId)
+      summary.recheckFlagged += flagged
+      log('warn', '文档「' + doc.title + '」的更新产出疑似退化（' + degradation + '），已降级为重新检查标记，未生成候选')
+      continue
+    }
+    const qualityFlags = runQualityChecks({ title: doc.title, kind: doc.kind, body: parsed.body, sources: deltaChanges.map((change) => change.path), siblingTitles: listDocuments(db, { kbIds: [kb.id], limit: 500 }).map((item) => item.title) })
+    const reason = '增量更新：' + deltaChanges.slice(0, 6).map((change) => change.change + ' ' + change.path).join('、') + (qualityFlags.length > 0 ? '｜质检提示：' + qualityFlags.join('；') : '')
     if (doc.status === 'approved') {
       const proposal = createProposal(db, kb, {
         kind: 'update',
@@ -552,6 +588,15 @@ export async function runIncremental(input: IncrementalInput): Promise<any> {
       ensureDocSources(db, updated.id, 'file', deltaChanges.map((change) => change.path))
       summary.updatedDrafts += 1
       log('info', '文档「' + doc.title + '」仍为草稿，已直接更新到第 ' + updated.currentVersion + ' 版（待审核区）')
+    }
+    // 父子联动：本文档更新后，父篇与子篇只打重新检查标记提示人工同步，不自动改写。
+    const relatedIds: string[] = []
+    if (doc.parentId) relatedIds.push(doc.parentId)
+    for (const child of all(db, 'SELECT id FROM documents WHERE parent_id = ? AND deleted_at IS NULL', [doc.id])) relatedIds.push(String((child as any).id))
+    if (relatedIds.length > 0) {
+      const flagged = flagRecheck(db, kb.id, relatedIds, '关联文档「' + doc.title + '」已更新，请检查是否需要同步', taskId)
+      summary.recheckFlagged += flagged
+      if (flagged > 0) log('info', '已标记 ' + flagged + ' 篇父/子文档需要重新检查（关联文档「' + doc.title + '」已更新）')
     }
   }
 

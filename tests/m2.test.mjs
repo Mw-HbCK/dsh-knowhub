@@ -95,6 +95,15 @@ function memoryPayload() {
   })
 }
 
+function planPayload() {
+  return JSON.stringify({
+    documents: [
+      { title: '项目总览', purpose: '说明项目目标与整体结构', angle: 'overview', evidence: ['package.json', 'README.md'], parent: null },
+      { title: '核心模块说明', purpose: '说明入口与核心模块职责', angle: 'module', evidence: ['src/index.ts'], parent: '项目总览' },
+    ],
+  })
+}
+
 function documentsPayload() {
   return JSON.stringify({
     documents: [
@@ -149,6 +158,7 @@ const llm = {
       const promptText = JSON.stringify(options.messages ?? '')
       const text = llmState.mode === 'bad-json'
         ? '抱歉，我无法按要求输出 JSON。'
+        : promptText.includes('文档大纲') ? planPayload()
         : promptText.includes('「知识卡片」候选') ? cardsPayload()
         : promptText.includes('「长期记忆」候选') ? memoryPayload()
         : documentsPayload()
@@ -244,9 +254,11 @@ await test('初始化成功：绑定模型被真实调用、生成草稿 Wiki、
   assert.ok(sources.length >= 2, 'Wiki 应关联来源文件')
   assert.ok(sources.every((source) => source.kind === 'file'))
   const calls = all(db, 'SELECT * FROM llm_calls WHERE kb_id = ? ORDER BY id', [kbA.id])
-  assert.equal(calls.length, 4, 'balanced 策略应产生 4 次模型调用（Wiki 2 + 卡片 1 + 记忆 1）')
+  assert.equal(calls.length, 4, 'balanced 策略应产生 4 次模型调用（Wiki 规划 1 + Wiki 生成 1 + 卡片 1 + 记忆 1）')
   assert.ok(calls.every((entry) => entry.provider === 'amd' && entry.model === 'DeepSeek-V4-Flash'))
-  assert.ok(calls.every((entry) => ['wiki-overview', 'wiki-architecture', 'cards-core', 'memory-core'].includes(entry.purpose)))
+  assert.ok(calls.every((entry) => ['wiki-plan', 'wiki-write', 'cards-core', 'memory-core'].includes(entry.purpose)))
+  const moduleDoc = docs.find((doc) => doc.title === '核心模块说明')
+  assert.ok(moduleDoc && overview && moduleDoc.parentId === overview.id, 'Wiki 子篇应按大纲设置 parentId 指向父篇')
   assert.ok(calls.every((entry) => entry.prompt_tokens === 1000 && entry.completion_tokens === 500))
   const kbRow = store.getKnowledgeBase(db, kbA.id)
   assert.equal(kbRow.status, 'ready')
@@ -260,7 +272,7 @@ await test('模型隔离：第二个知识库用另一个模型，互不影响',
   const task = await waitTask(taskId)
   assert.equal(task.status, 'succeeded')
   const calls = all(db, 'SELECT * FROM llm_calls WHERE kb_id = ? ORDER BY id', [kbB.id])
-  assert.equal(calls.length, 2, 'economy 策略应调用 2 次模型（Wiki 总览 + 卡片）')
+  assert.equal(calls.length, 3, 'economy 策略应调用 3 次模型（Wiki 规划 + Wiki 生成 + 卡片）')
   assert.equal(calls[0].provider, 'deepseek-account')
   assert.equal(calls[0].model, 'deepseek-v4-pro')
   assert.ok(llmState.calls.every((entry) => entry.provider === 'deepseek-account' && entry.model === 'deepseek-v4-pro'))
@@ -367,7 +379,7 @@ await test('用户级知识库初始化必须显式指定工作区', async () =>
   assert.equal(started.status, 200)
   const task = await waitTask(started.body.value.task.id)
   assert.equal(task.status, 'succeeded')
-  assert.ok(llmState.calls.length === 2)
+  assert.ok(llmState.calls.length === 3)
 })
 
 await test('索引与模型调用可通过 HTTP 读取（供面板展示真实数据）', async () => {
