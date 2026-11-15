@@ -16,10 +16,12 @@
 
     # 捆绑 Archify 技能（架构图 / 流程图 / 时序图 / 树形知识图谱等，Archify 3.2.0，Apache-2.0）：
     # 技能文件随本包分发在 skills/archify，机制与上游 @tt-a1i/archify-dsh 适配包一致；
-    # bundledSkillDir 锚定本包的安装位置解析，不拼宿主路径。与 @tt-a1i/archify-dsh 二选一安装，不要同装。
+    # bundledSkillDir 锚定本包的安装位置解析，不拼宿主路径。
+    # providerName 必须在本 profile 内唯一（同层重名注册会抛错）：上游适配包用 archify-plugin，
+    # 本包用 knowhub-archify 区分，故两者可同装（同名技能按宿主优先级裁决）；一般二选一即可。
     - id: knowhub-archify-skill
       name: '@deepseek-ai/dsh-skill-filesystem'
       config:
-        providerName: archify-plugin
+        providerName: knowhub-archify
         includeDefaultRoots: true
         bundledSkillDir: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-knowhub/package.json')), 'skills')

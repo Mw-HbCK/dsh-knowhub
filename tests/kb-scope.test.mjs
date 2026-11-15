@@ -23,6 +23,8 @@ process.env.DSH_HOME = dshHome
 const { openDatabase } = await load('db/db.js')
 const store = await load('kb/store.js')
 const { handleKbRequest } = await load('kb/route.js')
+const { handleM5Request } = await load('m5/route.js')
+const search = await load('search.js')
 
 let passed = 0
 const failures = []
@@ -132,6 +134,45 @@ await test('同名冲突提示带上作用范围与既有 id，不同工作区�
   const againUser = await (async () => { try { await store.createKnowledgeBase(db, { name: 'B 项目知识库', scope: 'user', modelProvider: 'amd', modelId: 'DeepSeek-V4-Flash', modelStrategy: 'economy' }, { storageRoot }) } catch (error) { return error } })()
   assert.equal(againUser.code, 'KB_NAME_DUPLICATED')
   assert.match(againUser.message, /用户级（所有工作区共享）/)
+})
+
+async function callM5(method, path) {
+  const url = new URL('http://knowhub.internal' + path)
+  const res = fakeRes()
+  const handled = await handleM5Request({ ctx, config, method, path: url.pathname.replace(/^\/api/, ''), url, req: { async *[Symbol.asyncIterator]() {} }, res })
+  assert.equal(handled, true, '路由未处理：' + method + ' ' + path)
+  return res.out
+}
+
+const docA = await search.createDocument(db, storageRoot, kbA, { title: 'A 项目架构', kind: 'wiki', body: 'A 项目的架构说明正文。', status: 'approved', verifyState: 'observed' })
+const docB = await search.createDocument(db, storageRoot, kbB, { title: 'B 项目架构', kind: 'wiki', body: 'B 项目的架构说明正文。', status: 'approved', verifyState: 'observed' })
+const memB = await search.createDocument(db, storageRoot, kbB, { title: 'B 项目选型记忆', kind: 'memory', body: 'B 项目的长期记忆正文。', status: 'approved', verifyState: 'observed' })
+
+await test('GET /documents 默认按作用域：别的工作区文档不可见（浏览页签为空的根因）', async () => {
+  const response = await callM5('GET', '/documents?kind=wiki&status=approved')
+  assert.equal(response.status, 200)
+  const ids = response.body.value.documents.map((item) => item.id)
+  assert.ok(ids.includes(docA.id), '应包含当前工作区 A 的文档')
+  assert.ok(!ids.includes(docB.id), '不应包含别的工作区 B 的文档')
+  assert.notEqual(response.body.value.all, true)
+})
+
+await test('GET /documents?all=1 管理面全量：跨工作区文档可见（面板浏览页签）', async () => {
+  const response = await callM5('GET', '/documents?all=1&kind=wiki,memory&status=approved')
+  assert.equal(response.status, 200)
+  assert.equal(response.body.value.all, true)
+  const ids = response.body.value.documents.map((item) => item.id)
+  assert.ok(ids.includes(docA.id) && ids.includes(docB.id) && ids.includes(memB.id))
+})
+
+await test('GET /documents?kbId= 指定别的工作区：默认 403，带 all=1 可见', async () => {
+  const denied = await callM5('GET', '/documents?kbId=' + kbB.id + '&kind=wiki&status=approved')
+  assert.equal(denied.status, 403)
+  assert.equal(denied.body.error.code, 'KB_FORBIDDEN')
+  const allowed = await callM5('GET', '/documents?all=1&kbId=' + kbB.id + '&kind=wiki&status=approved')
+  assert.equal(allowed.status, 200)
+  const ids = allowed.body.value.documents.map((item) => item.id)
+  assert.deepEqual(ids, [docB.id])
 })
 
 if (failures.length > 0) {
